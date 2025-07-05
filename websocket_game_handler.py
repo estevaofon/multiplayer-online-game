@@ -11,10 +11,13 @@ import uuid
 import os
 from typing import Dict, Any
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
 
+load_dotenv()
 # Configurações
 TABLE_NAME = os.environ.get("TABLE_NAME", "WebSocketConnections")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+API_GATEWAY_ENDPOINT = os.getenv("API_GATEWAY_ENDPOINT")
 
 # Clientes AWS
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
@@ -23,7 +26,7 @@ connections_table = dynamodb.Table(TABLE_NAME)
 
 def get_api_gateway_client(domain_name, stage):
     """Cria cliente para enviar mensagens WebSocket"""
-    endpoint_url = "https://***.amazonaws.com/production"
+    endpoint_url = API_GATEWAY_ENDPOINT
     return boto3.client("apigatewaymanagementapi", endpoint_url=endpoint_url, region_name=AWS_REGION)
 
 

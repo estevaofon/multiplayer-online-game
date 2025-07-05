@@ -4,6 +4,7 @@ Jogo Multiplayer WebSocket - Cliente
 Desenvolvido para AWS Lambda + DynamoDB + API Gateway WebSocket
 """
 
+import os
 import pygame
 import websocket
 import json
@@ -12,6 +13,9 @@ import threading
 from typing import Dict, List
 import uuid
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Configurações do jogo
 SCREEN_WIDTH = 800
@@ -21,7 +25,7 @@ PLAYER_SPEED = 5
 FPS = 60
 
 # 🔧 SUBSTITUA PELA SUA URL WEBSOCKET DA AWS
-WEBSOCKET_URL = "wss://***/production/"
+WEBSOCKET_URL = os.getenv("WEBSOCKET_URL")
 
 
 class MultiplayerGame:
