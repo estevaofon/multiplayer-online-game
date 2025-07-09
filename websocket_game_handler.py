@@ -11,13 +11,12 @@ import uuid
 import os
 from typing import Dict, Any
 from botocore.exceptions import ClientError
-from dotenv import load_dotenv
 
-load_dotenv()
+
 # Configurações
 TABLE_NAME = os.environ.get("TABLE_NAME", "WebSocketConnections")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-API_GATEWAY_ENDPOINT = os.getenv("API_GATEWAY_ENDPOINT")
+API_GATEWAY_ENDPOINT = os.environ.get("API_GATEWAY_ENDPOINT")
 
 # Clientes AWS
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
