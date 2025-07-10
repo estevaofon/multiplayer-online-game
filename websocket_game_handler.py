@@ -285,14 +285,23 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
 
         # Se não especificou time, escolhe automaticamente
         if not team:
+            print(f"🎯 Atribuindo time automaticamente para {player_id}")
             active_players = get_active_players()
             red_count = sum(1 for p in active_players.values() if p.get("team") == "red")
             blue_count = sum(1 for p in active_players.values() if p.get("team") == "blue")
             
+            print(f"   Jogadores ativos: {len(active_players)}")
+            print(f"   Time vermelho: {red_count} jogadores")
+            print(f"   Time azul: {blue_count} jogadores")
+            
             if red_count <= blue_count:
                 team = "red"
+                print(f"   ➡️ Atribuindo time VERMELHO (menos jogadores)")
             else:
                 team = "blue"
+                print(f"   ➡️ Atribuindo time AZUL (menos jogadores)")
+        else:
+            print(f"🎯 Jogador {player_id} especificou time: {team}")
 
         # Posição inicial baseada no time
         spawn_x = TEAMS[team]["spawn_x"]
@@ -400,6 +409,9 @@ def handle_update_position(connection_id: str, message: Dict[str, Any], api_gate
             "hp": hp,
             "timestamp": int(time.time())
         }, exclude_connection=connection_id)
+
+        # Verifica se alguma bandeira foi levada para a base
+        check_flag_scoring(api_gateway_client)
 
         return {"statusCode": 200, "body": "Posição atualizada"}
 
@@ -723,6 +735,7 @@ def check_flag_scoring(api_gateway_client):
     """
     try:
         current_time = int(time.time())
+        print(f"🏁 Verificando pontuação de bandeiras...")
         
         for flag_team, flag in game_state["flags"].items():
             if not flag["captured"]:
@@ -732,9 +745,12 @@ def check_flag_scoring(api_gateway_client):
             if not carrier_id:
                 continue
 
+            print(f"   Bandeira {flag_team} capturada por {carrier_id}")
+
             # Obtém dados do portador
             connection_id = get_connection_by_player_id(carrier_id)
             if not connection_id:
+                print(f"   ❌ Conexão não encontrada para {carrier_id}")
                 continue
 
             response = connections_table.get_item(Key={"connection_id": connection_id})
@@ -744,7 +760,10 @@ def check_flag_scoring(api_gateway_client):
             carrier_y = player_data.get("y", 0)
 
             if not carrier_team:
+                print(f"   ❌ Time não encontrado para {carrier_id}")
                 continue
+
+            print(f"   Portador {carrier_id} ({carrier_team}) em ({carrier_x}, {carrier_y})")
 
             # Verifica se está na base do time oposto
             enemy_team = "blue" if flag_team == "red" else "red"
@@ -755,7 +774,11 @@ def check_flag_scoring(api_gateway_client):
             dy = carrier_y - base_y
             distance = math.sqrt(dx*dx + dy*dy)
 
+            print(f"   Distância até base {enemy_team} ({base_x}, {base_y}): {distance}")
+
             if distance < BASE_SIZE // 2:
+                print(f"🏆 PONTO! {carrier_team} marcou ponto com bandeira {flag_team}!")
+                
                 # Ponto para o time do portador
                 game_state["scores"][carrier_team] += 1
 
@@ -773,9 +796,13 @@ def check_flag_scoring(api_gateway_client):
                     "scores": game_state["scores"],
                     "timestamp": current_time
                 })
+            else:
+                print(f"   Ainda não chegou na base (precisa < {BASE_SIZE // 2})")
 
     except Exception as e:
         print(f"❌ Erro ao verificar pontuação: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 def send_game_state(api_gateway_client, connection_id):

@@ -316,19 +316,16 @@ class MultiplayerGame:
         print("🌐 Conexão WebSocket estabelecida")
         self.connected = True
 
-        # Escolhe time automaticamente
-        active_players = len(self.other_players) + 1
-        team = "red" if active_players % 2 == 1 else "blue"
-
-        # Envia mensagem de entrada no jogo
+        # Envia mensagem de entrada no jogo (sem especificar time)
+        # O servidor vai atribuir o time automaticamente baseado no balanceamento
         join_message = {
             "action": "join", 
             "player_id": self.player_id, 
-            "team": team,
             "x": self.local_player["x"], 
             "y": self.local_player["y"]
         }
         ws.send(json.dumps(join_message))
+        print(f"🎮 Enviando join sem especificar time - servidor vai balancear")
 
     def connect_websocket(self):
         """Conecta ao WebSocket"""
