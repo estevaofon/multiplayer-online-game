@@ -97,11 +97,16 @@ class MultiplayerGame:
         # Controle de envio de posição
         self.last_sent_position = {"x": -1, "y": -1}
         self.last_position_time = 0
-        self.position_send_interval = 1 / 30  # 30 updates por segundo
+        self.position_send_interval = 1 / 60  # 60 updates por segundo (mais frequente para colisões)
 
         # Controle de tiro
         self.last_shot_time = 0
         self.shot_cooldown = 0.5  # 0.5 segundos entre tiros
+
+        # Controle de atualização de balas
+        self.last_bullet_update_time = 0
+        self.bullet_update_interval = 1 / 10  # 10 updates por segundo
+        self.sent_bullet_updates = set()  # Rastreia balas que já foram enviadas
 
         # Interface
         self.font = pygame.font.Font(None, 24)
@@ -143,13 +148,22 @@ class MultiplayerGame:
                 if "player_data" in data:
                     # Mensagem para o jogador que acabou de entrar
                     player_data = data["player_data"]
+                    
+                    # Debug: verifica se o player_id está sendo atualizado
+                    old_player_id = self.player_id
+                    if "player_id" in player_data:
+                        self.player_id = player_data["player_id"]
+                        print(f"🔄 Player ID atualizado: {old_player_id} -> {self.player_id}")
+                    else:
+                        print(f"⚠️ Player ID não encontrado em player_data: {player_data}")
+                    
                     self.local_player["team"] = player_data["team"]
                     self.local_player["color"] = self.convert_color(player_data["color"])
                     self.local_player["x"] = player_data["x"]
                     self.local_player["y"] = player_data["y"]
                     self.local_player["hp"] = player_data["hp"]
                     self.game_started = True
-                    print(f"✅ Você entrou no jogo! Time: {player_data['team']}")
+                    print(f"✅ Você entrou no jogo! Time: {player_data['team']} - Player ID: {self.player_id}")
                 else:
                     # Mensagem para outros jogadores
                     player_id = data["player_id"]
@@ -228,6 +242,28 @@ class MultiplayerGame:
 
             elif msg_type == "bullets_update":
                 self.bullets = data["bullets"]
+
+            elif msg_type == "bullet_position_update":
+                bullet_id = data["bullet_id"]
+                x = data["x"]
+                y = data["y"]
+                
+                # Atualiza posição da bala
+                for bullet in self.bullets:
+                    if bullet["id"] == bullet_id:
+                        bullet["x"] = x
+                        bullet["y"] = y
+                        break
+
+            elif msg_type == "bullet_removed":
+                bullet_id = data["bullet_id"]
+                
+                # Remove a bala
+                for bullet in self.bullets:
+                    if bullet["id"] == bullet_id:
+                        self.bullets.remove(bullet)
+                        self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
+                        break
 
             elif msg_type == "flag_captured":
                 flag_team = data["flag_team"]
@@ -330,6 +366,10 @@ class MultiplayerGame:
     def connect_websocket(self):
         """Conecta ao WebSocket"""
         try:
+            if not WEBSOCKET_URL:
+                print("❌ WEBSOCKET_URL não configurada")
+                return False
+                
             websocket.enableTrace(False)
             self.ws = websocket.WebSocketApp(
                 WEBSOCKET_URL, 
@@ -385,11 +425,15 @@ class MultiplayerGame:
 
     def send_shot(self, target_x, target_y):
         """Envia tiro"""
+        print(f"🔫 send_shot() chamada - target=({target_x}, {target_y})")
+        
         if not self.connected or not self.ws or self.dead:
+            print(f"   ❌ Não conectado ou morto - connected={self.connected}, dead={self.dead}")
             return
 
         current_time = time.time()
         if current_time - self.last_shot_time < self.shot_cooldown:
+            print(f"   ⏸️ Cooldown ativo - tempo restante: {self.shot_cooldown - (current_time - self.last_shot_time):.2f}s")
             return
 
         try:
@@ -401,8 +445,10 @@ class MultiplayerGame:
                 "player_x": self.local_player["x"],
                 "player_y": self.local_player["y"]
             }
+            print(f"   📤 Enviando tiro: {message}")
             self.ws.send(json.dumps(message))
             self.last_shot_time = current_time
+            print(f"   ✅ Tiro enviado com sucesso")
 
         except Exception as e:
             print(f"❌ Erro ao enviar tiro: {e}")
@@ -465,6 +511,96 @@ class MultiplayerGame:
             self.ws.send(json.dumps(message))
         except Exception as e:
             print(f"❌ Erro ao enviar ping: {e}")
+
+    def update_bullets(self):
+        """Atualiza posição das balas localmente e envia para o servidor"""
+        if not self.connected or not self.ws:
+            return
+
+        # Debug: mostra que a função está sendo chamada
+        if self.bullets:
+            print(f"🔄 update_bullets() chamada - {len(self.bullets)} balas ativas - Player ID: {self.player_id}")
+
+        current_time = time.time()
+        bullets_to_remove = []
+
+        # Debug: mostra quantas balas estão sendo processadas
+        if self.bullets:
+            print(f"🔍 Processando {len(self.bullets)} balas...")
+
+        for bullet in self.bullets:
+            # Remove balas antigas (mais de 5 segundos)
+            if current_time - bullet.get("created_at", 0) > 5:
+                bullets_to_remove.append(bullet)
+                continue
+
+            # Move a bala
+            bullet["x"] += bullet["dx"]
+            bullet["y"] += bullet["dy"]
+
+            # Verifica se saiu da tela
+            if (bullet["x"] < 0 or bullet["x"] > SCREEN_WIDTH or 
+                bullet["y"] < 0 or bullet["y"] > SCREEN_HEIGHT):
+                bullets_to_remove.append(bullet)
+                continue
+
+            # Se é uma bala do jogador local, envia atualização para o servidor
+            if bullet.get("shooter_id") == self.player_id:
+                bullet_id = bullet["id"]
+                
+                # Debug: mostra informações da bala
+                print(f"   Bala {bullet_id} em ({bullet['x']:.1f}, {bullet['y']:.1f}) - shooter: {bullet.get('shooter_id')}")
+                
+                # Debug: mostra as condições
+                time_condition = current_time - self.last_bullet_update_time >= self.bullet_update_interval
+                sent_condition = bullet_id not in self.sent_bullet_updates
+                print(f"   ⏱️ Condições: tempo={time_condition}, não_enviada={sent_condition}")
+                
+                # Só envia se não enviou recentemente e se a bala ainda não foi marcada como enviada
+                if time_condition and sent_condition:
+                    try:
+                        message = {
+                            "action": "bullet_update",
+                            "bullet_id": bullet_id,
+                            "x": bullet["x"],
+                            "y": bullet["y"],
+                            "shooter_id": self.player_id
+                        }
+                        print(f"   📤 Enviando atualização para bala {bullet_id}")
+                        self.ws.send(json.dumps(message))
+                        self.last_bullet_update_time = current_time
+                        self.sent_bullet_updates.add(bullet_id)
+                    except Exception as e:
+                        print(f"❌ Erro ao enviar atualização de bala: {e}")
+                else:
+                    print(f"   ⏸️ Bala {bullet_id} já foi enviada ou muito recente")
+            else:
+                print(f"   👤 Bala {bullet.get('id')} não é do jogador local (shooter: {bullet.get('shooter_id')})")
+
+        # Remove balas processadas
+        for bullet in bullets_to_remove:
+            if bullet in self.bullets:
+                bullet_id = bullet.get("id")
+                if bullet_id:
+                    self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
+                self.bullets.remove(bullet)
+
+    def send_bullet_update(self, bullet_id, x, y):
+        """Envia atualização de posição de bala para o servidor"""
+        if not self.connected or not self.ws:
+            return
+
+        try:
+            message = {
+                "action": "bullet_update",
+                "bullet_id": bullet_id,
+                "x": x,
+                "y": y,
+                "shooter_id": self.player_id
+            }
+            self.ws.send(json.dumps(message))
+        except Exception as e:
+            print(f"❌ Erro ao enviar atualização de bala: {e}")
 
     def handle_input(self):
         """Processa entrada do usuário"""
@@ -721,6 +857,9 @@ class MultiplayerGame:
 
             # Processa entrada
             self.handle_input()
+
+            # Atualiza balas
+            self.update_bullets()
 
             # Envia atualizações
             self.send_position_update()

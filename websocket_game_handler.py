@@ -24,6 +24,9 @@ API_GATEWAY_ENDPOINT = os.environ.get("API_GATEWAY_ENDPOINT")
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 connections_table = dynamodb.Table(TABLE_NAME)
 
+# DynamoDB table para balas
+bullets_table = dynamodb.Table("game_bullets")
+
 
 def get_api_gateway_client(domain_name, stage):
     """Cria cliente para enviar mensagens WebSocket"""
@@ -245,13 +248,18 @@ def handle_message(connection_id: str, message: Dict[str, Any], api_gateway_clie
     try:
         action = message.get("action", "unknown")
         print(f"🎯 Ação recebida: {action} de {connection_id}")
+        print(f"   Mensagem completa: {message}")
 
         if action == "join":
             return handle_join_game(connection_id, message, api_gateway_client)
         elif action == "update":
             return handle_update_position(connection_id, message, api_gateway_client)
         elif action == "shoot":
-            return handle_shoot(connection_id, message, api_gateway_client)
+            print(f"   🎯 Chamando handle_shoot para {connection_id}")
+            print(f"   📋 Dados da mensagem shoot: {message}")
+            result = handle_shoot(connection_id, message, api_gateway_client)
+            print(f"   ✅ handle_shoot retornou: {result}")
+            return result
         elif action == "capture_flag":
             return handle_capture_flag(connection_id, message, api_gateway_client)
         elif action == "drop_flag":
@@ -260,6 +268,8 @@ def handle_message(connection_id: str, message: Dict[str, Any], api_gateway_clie
             return handle_respawn(connection_id, message, api_gateway_client)
         elif action == "ping":
             return handle_ping(connection_id, api_gateway_client)
+        elif action == "bullet_update":
+            return handle_bullet_update(connection_id, message, api_gateway_client)
         else:
             print(f"❌ Ação desconhecida: {action}")
             send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": f"Ação desconhecida: {action}"})
@@ -413,6 +423,9 @@ def handle_update_position(connection_id: str, message: Dict[str, Any], api_gate
         # Verifica se alguma bandeira foi levada para a base
         check_flag_scoring(api_gateway_client)
 
+        # Verifica colisões de balas periodicamente
+        check_bullet_collisions_periodic(api_gateway_client)
+
         return {"statusCode": 200, "body": "Posição atualizada"}
 
     except Exception as e:
@@ -425,13 +438,17 @@ def handle_shoot(connection_id: str, message: Dict[str, Any], api_gateway_client
     Processa tiro do jogador
     """
     try:
+        print(f"🔫 Processando tiro para connection {connection_id}")
         player_id = message.get("player_id")
         target_x = message.get("target_x")
         target_y = message.get("target_y")
         player_x = message.get("player_x")
         player_y = message.get("player_y")
 
+        print(f"   Dados do tiro: player_id={player_id}, target=({target_x}, {target_y}), pos=({player_x}, {player_y})")
+
         if not all([player_id, target_x, target_y, player_x, player_y]):
+            print(f"   ❌ Dados de tiro incompletos")
             send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Dados de tiro incompletos"})
             return {"statusCode": 400, "body": "Dados de tiro incompletos"}
 
@@ -458,6 +475,7 @@ def handle_shoot(connection_id: str, message: Dict[str, Any], api_gateway_client
             dx = 0
             dy = BULLET_SPEED
 
+        current_time = int(time.time())
         bullet = {
             "id": bullet_id,
             "shooter_id": player_id,
@@ -466,21 +484,22 @@ def handle_shoot(connection_id: str, message: Dict[str, Any], api_gateway_client
             "y": player_y,
             "dx": dx,
             "dy": dy,
-            "created_at": int(time.time())
+            "created_at": current_time,
+            "ttl": current_time + 180  # 3 minutos = 180 segundos
         }
 
-        game_state["bullets"].append(bullet)
+        print(f"   💾 Chamando save_bullet_dynamo para bala {bullet_id}")
+        save_bullet_dynamo(bullet)
+        print(f"   ✅ Bala {bullet_id} salva no DynamoDB com TTL de 3 minutos")
 
-        # Broadcast do tiro
+        # Broadcast do tiro para todos os clientes
         broadcast_message(api_gateway_client, {
             "type": "bullet_shot",
             "bullet": bullet,
             "timestamp": int(time.time())
         })
 
-        # Processa colisões de projéteis
-        process_bullet_collisions(api_gateway_client)
-
+        print(f"   📤 Broadcast do tiro enviado para todos os clientes")
         return {"statusCode": 200, "body": "Tiro processado"}
 
     except Exception as e:
@@ -646,87 +665,243 @@ def handle_ping(connection_id: str, api_gateway_client):
         return {"statusCode": 500, "body": f"Erro no ping: {str(e)}"}
 
 
-def process_bullet_collisions(api_gateway_client):
+def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gateway_client):
     """
-    Processa colisões de projéteis com jogadores
+    Processa atualização de posição de bala do cliente
+    """
+    try:
+        bullet_id = message.get("bullet_id")
+        x = message.get("x")
+        y = message.get("y")
+        shooter_id = message.get("shooter_id")
+
+        print(f"📝 Recebida atualização de bala: {bullet_id} para ({x}, {y}) do shooter {shooter_id}")
+
+        if not all([bullet_id, x, y, shooter_id]):
+            send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Dados de atualização de bala incompletos"})
+            return {"statusCode": 400, "body": "Dados de atualização de bala incompletos"}
+
+        # Busca a bala no DynamoDB
+        try:
+            print(f"🔍 Buscando bala {bullet_id} no DynamoDB...")
+            response = bullets_table.get_item(Key={"id": bullet_id})
+            bullet = response.get("Item")
+            
+            if not bullet:
+                print(f"❌ Bala {bullet_id} não encontrada no DynamoDB")
+                print(f"   Response completo: {response}")
+                
+                # Lista todas as balas para debug
+                all_bullets_response = bullets_table.scan()
+                all_bullets = all_bullets_response.get("Items", [])
+                print(f"   Balas existentes no DynamoDB: {len(all_bullets)}")
+                for b in all_bullets:
+                    print(f"     - {b.get('id')}: ({b.get('x')}, {b.get('y')}) - shooter: {b.get('shooter_id')}")
+                
+                send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Bala não encontrada"})
+                return {"statusCode": 400, "body": "Bala não encontrada"}
+            
+            print(f"✅ Bala {bullet_id} encontrada no DynamoDB")
+            print(f"   Dados da bala: {bullet}")
+        except Exception as e:
+            print(f"❌ Erro ao buscar bala no DynamoDB: {e}")
+            import traceback
+            traceback.print_exc()
+            send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Erro ao buscar bala"})
+            return {"statusCode": 500, "body": "Erro ao buscar bala"}
+
+        # Verifica se o cliente que enviou é o atirador (para evitar cheating)
+        if bullet["shooter_id"] != shooter_id:
+            print(f"❌ Tentativa de atualizar bala de outro jogador: {bullet['shooter_id']} != {shooter_id}")
+            send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Apenas o atirador pode atualizar a bala"})
+            return {"statusCode": 400, "body": "Apenas o atirador pode atualizar a bala"}
+
+        # Atualiza posição da bala
+        bullet["x"] = x
+        bullet["y"] = y
+        
+        # Atualiza posição no DynamoDB
+        print(f"💾 Atualizando bala {bullet_id} no DynamoDB para ({x}, {y})")
+        update_success = update_bullet_dynamo(bullet_id, x, y)
+        
+        if not update_success:
+            print(f"❌ Falha ao atualizar bala {bullet_id} no DynamoDB")
+            send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": "Erro ao atualizar bala no servidor"})
+            return {"statusCode": 500, "body": "Erro ao atualizar bala"}
+        
+        print(f"✅ Bala {bullet_id} atualizada com sucesso no DynamoDB")
+
+        # Verifica se a bala saiu da tela
+        if (x is not None and y is not None and 
+            (float(x) < 0 or float(x) > GAME_WIDTH or float(y) < 0 or float(y) > GAME_HEIGHT)):
+            print(f"🗑️ Bala {bullet_id} saiu da tela - removendo")
+            delete_bullet_dynamo(bullet_id)  # Remove do DynamoDB
+            # Broadcast da remoção da bala
+            broadcast_message(api_gateway_client, {
+                "type": "bullet_removed",
+                "bullet_id": bullet_id,
+                "timestamp": int(time.time())
+            })
+            return {"statusCode": 200, "body": "Bala removida"}
+
+        # Verifica colisões de balas periodicamente
+        print(f"🔍 Verificando colisões para bala {bullet_id}")
+        check_bullet_collisions_periodic(api_gateway_client)
+
+        # Verifica novamente se a bala ainda existe (pode ter sido removida por colisão)
+        try:
+            response = bullets_table.get_item(Key={"id": bullet_id})
+            bullet_still_exists = response.get("Item") is not None
+            
+            if bullet_still_exists:
+                print(f"✅ Bala {bullet_id} ainda existe após verificação de colisão - enviando broadcast")
+                # Se não houve colisão, broadcast da nova posição para outros clientes
+                broadcast_message(api_gateway_client, {
+                    "type": "bullet_position_update",
+                    "bullet_id": bullet_id,
+                    "x": x,
+                    "y": y,
+                    "timestamp": int(time.time())
+                }, exclude_connection=connection_id)
+            else:
+                print(f"🗑️ Bala {bullet_id} foi removida por colisão - não enviando broadcast")
+        except Exception as e:
+            print(f"❌ Erro ao verificar se bala ainda existe: {e}")
+
+        return {"statusCode": 200, "body": "Posição da bala atualizada"}
+
+    except Exception as e:
+        print(f"❌ Erro ao processar atualização de bala: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"statusCode": 500, "body": f"Erro ao processar atualização de bala: {str(e)}"}
+
+
+def check_bullet_collisions_periodic(api_gateway_client):
+    """
+    Verifica colisões de balas com jogadores periodicamente
     """
     try:
         current_time = int(time.time())
         active_players = get_active_players()
         bullets_to_remove = []
 
-        for bullet in game_state["bullets"]:
-            # Remove projéteis antigos (mais de 5 segundos)
-            if current_time - bullet["created_at"] > 5:
+        # Busca todas as balas do DynamoDB
+        bullets = get_all_bullets_dynamo()
+        print(f"🔍 Verificação periódica de colisões - {len(bullets)} balas do DynamoDB, {len(active_players)} jogadores")
+
+        if not bullets:
+            print("   📭 Nenhuma bala para verificar")
+            return
+
+        if not active_players:
+            print("   👥 Nenhum jogador ativo para verificar")
+            return
+
+        for bullet in bullets:
+            # Remove projéteis antigos (mais de 30 segundos) ou que expiraram o TTL
+            bullet_ttl = bullet.get("ttl", 0)
+            if current_time - bullet["created_at"] > 30 or current_time > bullet_ttl:
                 bullets_to_remove.append(bullet)
+                reason = "TTL expirado" if current_time > bullet_ttl else "antiga"
+                print(f"   🗑️ Bala {bullet['id']} removida ({reason})")
                 continue
 
-            # Atualiza posição do projétil
-            bullet["x"] += bullet["dx"]
-            bullet["y"] += bullet["dy"]
+            # Converte valores Decimal para float para comparação
+            bullet_x = bullet.get("x", 0)
+            bullet_y = bullet.get("y", 0)
+            
+            if isinstance(bullet_x, Decimal):
+                bullet_x = float(bullet_x)
+            if isinstance(bullet_y, Decimal):
+                bullet_y = float(bullet_y)
+
+            print(f"   🎯 Verificando bala {bullet['id']} ({bullet_x:.1f}, {bullet_y:.1f}) - Time: {bullet['shooter_team']}")
 
             # Verifica colisão com jogadores
             for player_id, player_data in active_players.items():
                 if player_data.get("team") == bullet["shooter_team"]:
+                    print(f"      ⏸️ Pulando jogador {player_id} (mesmo time)")
                     continue  # Não atira no próprio time
 
                 player_x = player_data.get("x", 0)
                 player_y = player_data.get("y", 0)
                 
                 # Distância entre projétil e jogador
-                dx = bullet["x"] - player_x
-                dy = bullet["y"] - player_y
-                distance = math.sqrt(dx*dx + dy*dy)
+                if (bullet_x is not None and bullet_y is not None and 
+                    player_x is not None and player_y is not None):
+                    dx = bullet_x - player_x
+                    dy = bullet_y - player_y
+                    distance = math.sqrt(dx*dx + dy*dy)
 
-                if distance < 20:  # Raio de colisão
-                    # Atingiu jogador
-                    new_hp = max(0, player_data.get("hp", PLAYER_MAX_HP) - BULLET_DAMAGE)
-                    
-                    # Atualiza HP no DynamoDB
-                    connection_id = get_connection_by_player_id(player_id)
-                    if connection_id:
-                        connections_table.update_item(
-                            Key={"connection_id": connection_id},
-                            UpdateExpression="SET hp = :hp, last_activity = :time",
-                            ExpressionAttributeValues={
-                                ":hp": new_hp,
-                                ":time": current_time
-                            }
-                        )
+                    print(f"      vs jogador {player_id} ({player_x:.1f}, {player_y:.1f}) - distância: {distance:.2f}")
 
-                    # Broadcast do dano
-                    broadcast_message(api_gateway_client, {
-                        "type": "player_hit",
-                        "player_id": player_id,
-                        "damage": BULLET_DAMAGE,
-                        "new_hp": new_hp,
-                        "shooter_id": bullet["shooter_id"],
-                        "timestamp": current_time
-                    })
+                    # Aumenta o raio de colisão para 30 pixels
+                    if distance < 30:  # Raio de colisão aumentado
+                        print(f"🎯 COLISÃO DETECTADA! Bala {bullet['id']} atingiu jogador {player_id}")
+                        print(f"   HP atual: {player_data.get('hp', PLAYER_MAX_HP)}")
+                        print(f"   Dano: {BULLET_DAMAGE}")
+                        
+                        # Atingiu jogador
+                        new_hp = max(0, player_data.get("hp", PLAYER_MAX_HP) - BULLET_DAMAGE)
+                        print(f"   Novo HP: {new_hp}")
+                        
+                        # Atualiza HP no DynamoDB
+                        player_connection_id = get_connection_by_player_id(player_id)
+                        print(f"   Connection ID encontrado: {player_connection_id}")
+                        
+                        if player_connection_id:
+                            try:
+                                connections_table.update_item(
+                                    Key={"connection_id": player_connection_id},
+                                    UpdateExpression="SET hp = :hp, last_activity = :time",
+                                    ExpressionAttributeValues={
+                                        ":hp": new_hp,
+                                        ":time": current_time
+                                    }
+                                )
+                                print(f"   ✅ HP atualizado no DynamoDB para {new_hp}")
+                            except Exception as e:
+                                print(f"   ❌ Erro ao atualizar HP no DynamoDB: {e}")
+                        else:
+                            print(f"   ❌ Connection ID não encontrado para player {player_id}")
 
-                    bullets_to_remove.append(bullet)
-                    break
+                        # Remove a bala
+                        bullets_to_remove.append(bullet)
 
-            # Remove projéteis que saíram da tela
-            if (bullet["x"] < 0 or bullet["x"] > GAME_WIDTH or 
-                bullet["y"] < 0 or bullet["y"] > GAME_HEIGHT):
-                bullets_to_remove.append(bullet)
+                        # Broadcast do dano e remoção da bala
+                        broadcast_message(api_gateway_client, {
+                            "type": "player_hit",
+                            "player_id": player_id,
+                            "damage": BULLET_DAMAGE,
+                            "new_hp": new_hp,
+                            "shooter_id": bullet["shooter_id"],
+                            "timestamp": current_time
+                        })
 
-        # Remove projéteis processados
+                        broadcast_message(api_gateway_client, {
+                            "type": "bullet_removed",
+                            "bullet_id": bullet["id"],
+                            "timestamp": current_time
+                        })
+
+                        break  # Bala já atingiu alguém, não precisa verificar outros jogadores
+                    else:
+                        print(f"      ❌ Distância muito grande ({distance:.2f} >= 30)")
+
+        # Remove balas processadas do DynamoDB
         for bullet in bullets_to_remove:
-            if bullet in game_state["bullets"]:
-                game_state["bullets"].remove(bullet)
+            delete_bullet_dynamo(bullet["id"])
 
-        # Broadcast da posição atualizada dos projéteis
-        if game_state["bullets"]:
-            broadcast_message(api_gateway_client, {
-                "type": "bullets_update",
-                "bullets": game_state["bullets"],
-                "timestamp": current_time
-            })
+        if bullets_to_remove:
+            print(f"✅ Verificação periódica concluída - {len(bullets_to_remove)} balas removidas")
+        else:
+            print(f"✅ Verificação periódica concluída - nenhuma colisão detectada")
 
     except Exception as e:
-        print(f"❌ Erro ao processar colisões: {str(e)}")
+        print(f"❌ Erro na verificação periódica de colisões: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 def check_flag_scoring(api_gateway_client):
@@ -816,12 +991,15 @@ def send_game_state(api_gateway_client, connection_id):
         print(f"📊 Enviando game_state para {connection_id} com {len(active_players)} jogadores ativos")
         print(f"   Jogadores encontrados: {list(active_players.keys())}")
         
+        # Busca balas do DynamoDB
+        bullets = get_all_bullets_dynamo()
+        
         # Monta o game_state_message
         game_state_message = {
             "type": "game_state",
             "players": active_players,
             "flags": game_state["flags"],
-            "bullets": game_state["bullets"],
+            "bullets": bullets,
             "scores": game_state["scores"],
             "teams": TEAMS,
             "timestamp": int(time.time())
@@ -834,7 +1012,7 @@ def send_game_state(api_gateway_client, connection_id):
         print(f"   game_state antes da conversão:")
         print(f"     - players: {type(active_players)} com {len(active_players)} itens")
         print(f"     - flags: {type(game_state['flags'])}")
-        print(f"     - bullets: {type(game_state['bullets'])} com {len(game_state['bullets'])} itens")
+        print(f"     - bullets: {type(bullets)} com {len(bullets)} itens do DynamoDB")
         print(f"     - scores: {type(game_state['scores'])}")
         print(f"     - teams: {type(TEAMS)}")
         
@@ -857,20 +1035,27 @@ def send_game_state(api_gateway_client, connection_id):
         traceback.print_exc()
 
 
-def get_connection_by_player_id(player_id: str) -> str:
+def get_connection_by_player_id(player_id: str) -> str | None:
     """
     Obtém connection_id pelo player_id
     """
     try:
+        print(f"🔍 Buscando connection_id para player {player_id}")
         response = connections_table.scan(
             FilterExpression="player_id = :pid",
             ExpressionAttributeValues={":pid": player_id}
         )
         
         items = response.get("Items", [])
+        print(f"   Items encontrados: {len(items)}")
+        
         if items:
-            return items[0]["connection_id"]
-        return None
+            connection_id = items[0]["connection_id"]
+            print(f"   ✅ Connection ID encontrado: {connection_id}")
+            return connection_id
+        else:
+            print(f"   ❌ Nenhum item encontrado para player {player_id}")
+            return None
 
     except Exception as e:
         print(f"❌ Erro ao buscar conexão por player_id: {str(e)}")
@@ -883,30 +1068,45 @@ def get_active_players() -> Dict[str, Any]:
     """
     try:
         response = connections_table.scan(
-            FilterExpression="player_id <> :null",
-            ExpressionAttributeValues={":null": None},
-            ConsistentRead=True  # <--- leitura consistente
+            FilterExpression="attribute_exists(player_id) AND player_id <> :null",
+            ExpressionAttributeValues={":null": None}
         )
         
         players = {}
+        print(f"🔍 Buscando jogadores ativos...")
+        
         for item in response.get("Items", []):
-            if item.get("player_id"):
+            player_id = item.get("player_id")
+            if player_id:
                 team = item.get("team")
-                print(f"🔍 Processando jogador {item['player_id']} com team: {team}")
+                print(f"   Jogador {player_id} com team: {team}")
                 
                 # Verifica se o team existe em TEAMS
                 if team not in TEAMS:
                     print(f"⚠️ Team '{team}' não encontrado em TEAMS: {list(TEAMS.keys())}")
                     team = "red"  # fallback
                 
-                players[item["player_id"]] = {
+                # Converte valores Decimal para float
+                x = item.get("x", 0)
+                y = item.get("y", 0)
+                hp = item.get("hp", PLAYER_MAX_HP)
+                
+                if isinstance(x, Decimal):
+                    x = float(x)
+                if isinstance(y, Decimal):
+                    y = float(y)
+                if isinstance(hp, Decimal):
+                    hp = float(hp)
+                
+                players[player_id] = {
                     "team": team,
-                    "x": float(item.get("x", 0)) if isinstance(item.get("x"), Decimal) else item.get("x", 0),
-                    "y": float(item.get("y", 0)) if isinstance(item.get("y"), Decimal) else item.get("y", 0),
-                    "hp": float(item.get("hp", PLAYER_MAX_HP)) if isinstance(item.get("hp"), Decimal) else item.get("hp", PLAYER_MAX_HP),
+                    "x": x,
+                    "y": y,
+                    "hp": hp,
                     "color": TEAMS[team]["color"]
                 }
         
+        print(f"✅ Encontrados {len(players)} jogadores ativos")
         return players
 
     except Exception as e:
@@ -1060,3 +1260,99 @@ def debug_handler(event, context):
     except Exception as e:
         print(f"❌ Erro no debug: {str(e)}")
         return {"statusCode": 501, "body": f"Erro no debug: {str(e)}"}
+
+
+def bullet_to_dynamo(bullet):
+    """Convert all numeric fields in a bullet to Decimal for DynamoDB."""
+    bullet = bullet.copy()
+    for key in ['x', 'y', 'dx', 'dy']:
+        if key in bullet:
+            bullet[key] = Decimal(str(bullet[key]))
+    # created_at and ttl should be int, but DynamoDB accepts int or Decimal
+    for key in ['created_at', 'ttl']:
+        if key in bullet:
+            bullet[key] = int(bullet[key])
+    return bullet
+
+
+def save_bullet_dynamo(bullet):
+    """Salva uma bala no DynamoDB."""
+    try:
+        bullet = bullet_to_dynamo(bullet)
+        print(f"💾 Tentando salvar bala {bullet['id']} no DynamoDB...")
+        print(f"   Dados da bala: {bullet}")
+        bullets_table.put_item(Item=bullet)
+        print(f"✅ Bala {bullet['id']} salva no DynamoDB com sucesso")
+    except Exception as e:
+        print(f"❌ Erro ao salvar bala no DynamoDB: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def update_bullet_dynamo(bullet_id, x, y):
+    """Atualiza posição da bala no DynamoDB."""
+    try:
+        print(f"🔧 Tentando atualizar bala {bullet_id} para ({x}, {y})")
+        
+        # Primeiro verifica se a bala existe
+        try:
+            response = bullets_table.get_item(Key={"id": bullet_id})
+            bullet = response.get("Item")
+            
+            if not bullet:
+                print(f"❌ Bala {bullet_id} não encontrada no DynamoDB para atualização")
+                return False
+            
+            print(f"✅ Bala {bullet_id} encontrada no DynamoDB, atualizando posição...")
+        except Exception as e:
+            print(f"❌ Erro ao verificar se bala {bullet_id} existe: {e}")
+            return False
+        
+        # Converte para Decimal
+        x_decimal = Decimal(str(x))
+        y_decimal = Decimal(str(y))
+        
+        # Atualiza a posição
+        bullets_table.update_item(
+            Key={"id": bullet_id},
+            UpdateExpression="SET x = :x, y = :y",
+            ExpressionAttributeValues={":x": x_decimal, ":y": y_decimal}
+        )
+        print(f"✅ Bala {bullet_id} atualizada no DynamoDB para ({x_decimal}, {y_decimal})")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao atualizar bala {bullet_id} no DynamoDB: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def delete_bullet_dynamo(bullet_id):
+    """Remove uma bala do DynamoDB."""
+    try:
+        bullets_table.delete_item(Key={"id": bullet_id})
+        print(f"🗑️ Bala {bullet_id} removida do DynamoDB")
+    except Exception as e:
+        print(f"❌ Erro ao remover bala do DynamoDB: {e}")
+
+
+def get_all_bullets_dynamo():
+    """Busca todas as balas do DynamoDB."""
+    try:
+        response = bullets_table.scan()
+        bullets = response.get("Items", [])
+        current_time = int(time.time())
+        
+        # Conta balas próximas de expirar (menos de 30 segundos)
+        expiring_soon = 0
+        for bullet in bullets:
+            bullet_ttl = bullet.get("ttl", 0)
+            if bullet_ttl > 0 and bullet_ttl - current_time < 30:
+                expiring_soon += 1
+        
+        print(f"🔎 {len(bullets)} balas carregadas do DynamoDB ({expiring_soon} próximas de expirar)")
+        return bullets
+    except Exception as e:
+        print(f"❌ Erro ao buscar balas do DynamoDB: {e}")
+        return []
