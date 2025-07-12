@@ -105,8 +105,7 @@ class MultiplayerGame:
 
         # Controle de atualização de balas
         self.last_bullet_update_time = 0
-        self.bullet_update_interval = 1 / 10  # 10 updates por segundo
-        self.sent_bullet_updates = set()  # Rastreia balas que já foram enviadas
+        self.bullet_update_interval = 1 / 30  # 30 updates por segundo (mais frequente para colisões)
 
         # Interface
         self.font = pygame.font.Font(None, 24)
@@ -173,7 +172,7 @@ class MultiplayerGame:
                             "y": int(float(data["y"])),
                             "team": data["team"],
                             "color": self.convert_color(data["color"]),
-                            "hp": data.get("hp", 100)
+                            "hp": 100  # HP padrão para novos jogadores
                         }
                         print(f"👋 Jogador {player_id} entrou no jogo (Time {data['team']})")
 
@@ -190,13 +189,26 @@ class MultiplayerGame:
                 player_id = data["player_id"]
                 if player_id != self.player_id:
                     try:
-                        self.other_players[player_id] = {
-                            "x": int(float(data["x"])),
-                            "y": int(float(data["y"])),
-                            "team": data["team"],
-                            "color": self.convert_color(data["color"]),
-                            "hp": data.get("hp", 100)
-                        }
+                        # Atualiza apenas posição e dados básicos, mantém HP existente
+                        if player_id in self.other_players:
+                            # Preserva HP existente
+                            current_hp = self.other_players[player_id].get("hp", 100)
+                            self.other_players[player_id].update({
+                                "x": int(float(data["x"])),
+                                "y": int(float(data["y"])),
+                                "team": data["team"],
+                                "color": self.convert_color(data["color"]),
+                                "hp": current_hp  # Mantém HP atual
+                            })
+                        else:
+                            # Novo jogador, usa HP padrão
+                            self.other_players[player_id] = {
+                                "x": int(float(data["x"])),
+                                "y": int(float(data["y"])),
+                                "team": data["team"],
+                                "color": self.convert_color(data["color"]),
+                                "hp": 100
+                            }
                     except (ValueError, TypeError) as e:
                         print(f"❌ Erro ao processar update do jogador {player_id}: {e}")
 
@@ -220,6 +232,18 @@ class MultiplayerGame:
                         if new_hp <= 0:
                             print(f"💀 {player_id} foi morto por {shooter_id}")
 
+            elif msg_type == "player_hp_update":
+                player_id = data["player_id"]
+                hp = data["hp"]
+                
+                if player_id == self.player_id:
+                    self.local_player["hp"] = hp
+                    # Não loga aqui para evitar duplicação com player_hit
+                else:
+                    if player_id in self.other_players:
+                        self.other_players[player_id]["hp"] = hp
+                        print(f"💚 HP de {player_id} sincronizado: {hp}")
+
             elif msg_type == "player_respawned":
                 player_id = data["player_id"]
                 if player_id == self.player_id:
@@ -234,6 +258,7 @@ class MultiplayerGame:
                         self.other_players[player_id]["hp"] = data["hp"]
                         self.other_players[player_id]["x"] = data["x"]
                         self.other_players[player_id]["y"] = data["y"]
+                        print(f"🔄 {player_id} respawnou!")
 
             elif msg_type == "bullet_shot":
                 bullet = data["bullet"]
@@ -262,7 +287,6 @@ class MultiplayerGame:
                 for bullet in self.bullets:
                     if bullet["id"] == bullet_id:
                         self.bullets.remove(bullet)
-                        self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
                         break
 
             elif msg_type == "flag_captured":
@@ -512,6 +536,8 @@ class MultiplayerGame:
         except Exception as e:
             print(f"❌ Erro ao enviar ping: {e}")
 
+
+
     def update_bullets(self):
         """Atualiza posição das balas localmente e envia para o servidor"""
         if not self.connected or not self.ws:
@@ -553,11 +579,10 @@ class MultiplayerGame:
                 
                 # Debug: mostra as condições
                 time_condition = current_time - self.last_bullet_update_time >= self.bullet_update_interval
-                sent_condition = bullet_id not in self.sent_bullet_updates
-                print(f"   ⏱️ Condições: tempo={time_condition}, não_enviada={sent_condition}")
+                print(f"   ⏱️ Condição: tempo={time_condition}")
                 
-                # Só envia se não enviou recentemente e se a bala ainda não foi marcada como enviada
-                if time_condition and sent_condition:
+                # Envia atualização se passou tempo suficiente
+                if time_condition:
                     try:
                         message = {
                             "action": "bullet_update",
@@ -569,20 +594,16 @@ class MultiplayerGame:
                         print(f"   📤 Enviando atualização para bala {bullet_id}")
                         self.ws.send(json.dumps(message))
                         self.last_bullet_update_time = current_time
-                        self.sent_bullet_updates.add(bullet_id)
                     except Exception as e:
                         print(f"❌ Erro ao enviar atualização de bala: {e}")
                 else:
-                    print(f"   ⏸️ Bala {bullet_id} já foi enviada ou muito recente")
+                    print(f"   ⏸️ Bala {bullet_id} muito recente para enviar")
             else:
                 print(f"   👤 Bala {bullet.get('id')} não é do jogador local (shooter: {bullet.get('shooter_id')})")
 
         # Remove balas processadas
         for bullet in bullets_to_remove:
             if bullet in self.bullets:
-                bullet_id = bullet.get("id")
-                if bullet_id:
-                    self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
                 self.bullets.remove(bullet)
 
     def send_bullet_update(self, bullet_id, x, y):
@@ -650,6 +671,8 @@ class MultiplayerGame:
         if keys[pygame.K_q]:
             if self.local_player["carrying_flag"]:
                 self.send_drop_flag()
+                
+
 
     def try_capture_flag(self):
         """Tenta capturar bandeira próxima"""
