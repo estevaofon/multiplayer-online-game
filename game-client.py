@@ -105,8 +105,7 @@ class MultiplayerGame:
 
         # Controle de atualização de balas
         self.last_bullet_update_time = 0
-        self.bullet_update_interval = 1 / 10  # 10 updates por segundo
-        self.sent_bullet_updates = set()  # Rastreia balas que já foram enviadas
+        self.bullet_update_interval = 1 / 30  # 30 updates por segundo (mais frequente para colisões)
 
         # Interface
         self.font = pygame.font.Font(None, 24)
@@ -288,7 +287,6 @@ class MultiplayerGame:
                 for bullet in self.bullets:
                     if bullet["id"] == bullet_id:
                         self.bullets.remove(bullet)
-                        self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
                         break
 
             elif msg_type == "flag_captured":
@@ -581,11 +579,10 @@ class MultiplayerGame:
                 
                 # Debug: mostra as condições
                 time_condition = current_time - self.last_bullet_update_time >= self.bullet_update_interval
-                sent_condition = bullet_id not in self.sent_bullet_updates
-                print(f"   ⏱️ Condições: tempo={time_condition}, não_enviada={sent_condition}")
+                print(f"   ⏱️ Condição: tempo={time_condition}")
                 
-                # Só envia se não enviou recentemente e se a bala ainda não foi marcada como enviada
-                if time_condition and sent_condition:
+                # Envia atualização se passou tempo suficiente
+                if time_condition:
                     try:
                         message = {
                             "action": "bullet_update",
@@ -597,20 +594,16 @@ class MultiplayerGame:
                         print(f"   📤 Enviando atualização para bala {bullet_id}")
                         self.ws.send(json.dumps(message))
                         self.last_bullet_update_time = current_time
-                        self.sent_bullet_updates.add(bullet_id)
                     except Exception as e:
                         print(f"❌ Erro ao enviar atualização de bala: {e}")
                 else:
-                    print(f"   ⏸️ Bala {bullet_id} já foi enviada ou muito recente")
+                    print(f"   ⏸️ Bala {bullet_id} muito recente para enviar")
             else:
                 print(f"   👤 Bala {bullet.get('id')} não é do jogador local (shooter: {bullet.get('shooter_id')})")
 
         # Remove balas processadas
         for bullet in bullets_to_remove:
             if bullet in self.bullets:
-                bullet_id = bullet.get("id")
-                if bullet_id:
-                    self.sent_bullet_updates.discard(bullet_id)  # Remove do rastreamento
                 self.bullets.remove(bullet)
 
     def send_bullet_update(self, bullet_id, x, y):

@@ -746,9 +746,10 @@ def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gatewa
             })
             return {"statusCode": 200, "body": "Bala removida"}
 
-        # Verifica colisões de balas periodicamente
+        # Verifica colisões de balas imediatamente após atualização
         print(f"🔍 Verificando colisões para bala {bullet_id}")
-        check_bullet_collisions_periodic(api_gateway_client)
+        if bullet_id and x is not None and y is not None:
+            check_bullet_collisions_immediate(api_gateway_client, str(bullet_id), float(x), float(y))
 
         # Verifica novamente se a bala ainda existe (pode ter sido removida por colisão)
         try:
@@ -780,6 +781,118 @@ def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gatewa
 
 
 
+
+
+def check_bullet_collisions_immediate(api_gateway_client, bullet_id: str, bullet_x: float, bullet_y: float):
+    """
+    Verifica colisões de uma bala específica imediatamente
+    """
+    try:
+        current_time = int(time.time())
+        active_players = get_active_players()
+        
+        print(f"🎯 Verificação imediata de colisão para bala {bullet_id} em ({bullet_x:.1f}, {bullet_y:.1f})")
+
+        if not active_players:
+            print("   👥 Nenhum jogador ativo para verificar")
+            return False
+
+        # Busca a bala específica no DynamoDB
+        try:
+            response = bullets_table.get_item(Key={"id": bullet_id})
+            bullet = response.get("Item")
+            
+            if not bullet:
+                print(f"   ❌ Bala {bullet_id} não encontrada no DynamoDB")
+                return False
+                
+        except Exception as e:
+            print(f"   ❌ Erro ao buscar bala {bullet_id}: {e}")
+            return False
+
+        # Verifica colisão com jogadores
+        for player_id, player_data in active_players.items():
+            if player_data.get("team") == bullet["shooter_team"]:
+                continue  # Não atira no próprio time
+
+            player_x = player_data.get("x", 0)
+            player_y = player_data.get("y", 0)
+            player_hp = player_data.get("hp", PLAYER_MAX_HP)
+            
+            # Distância entre projétil e jogador
+            if (bullet_x is not None and bullet_y is not None and 
+                player_x is not None and player_y is not None):
+                dx = bullet_x - player_x
+                dy = bullet_y - player_y
+                distance = math.sqrt(dx*dx + dy*dy)
+
+                print(f"   vs jogador {player_id} ({player_x:.1f}, {player_y:.1f}) - distância: {distance:.2f}")
+
+                # Raio de colisão de 30 pixels
+                if distance < 30:
+                    print(f"🎯 COLISÃO IMEDIATA DETECTADA! Bala {bullet_id} atingiu jogador {player_id}")
+                    
+                    # Atingiu jogador
+                    current_hp = player_data.get("hp", PLAYER_MAX_HP)
+                    if isinstance(current_hp, Decimal):
+                        current_hp = float(current_hp)
+                    
+                    new_hp = max(0, current_hp - BULLET_DAMAGE)
+                    print(f"   HP atual: {current_hp} -> Novo HP: {new_hp}")
+                    
+                    # Atualiza HP no DynamoDB
+                    player_connection_id = get_connection_by_player_id(player_id)
+                    
+                    if player_connection_id:
+                        try:
+                            connections_table.update_item(
+                                Key={"connection_id": player_connection_id},
+                                UpdateExpression="SET hp = :hp, last_activity = :time",
+                                ExpressionAttributeValues={
+                                    ":hp": Decimal(str(new_hp)),
+                                    ":time": current_time
+                                }
+                            )
+                            print(f"   ✅ HP atualizado no DynamoDB para {new_hp}")
+                        except Exception as e:
+                            print(f"   ❌ Erro ao atualizar HP no DynamoDB: {e}")
+                            return False
+
+                    # Remove a bala
+                    delete_bullet_dynamo(bullet_id)
+
+                    # Broadcast do dano e remoção da bala
+                    broadcast_message(api_gateway_client, {
+                        "type": "player_hit",
+                        "player_id": player_id,
+                        "damage": BULLET_DAMAGE,
+                        "new_hp": new_hp,
+                        "shooter_id": bullet["shooter_id"],
+                        "timestamp": current_time
+                    })
+
+                    broadcast_message(api_gateway_client, {
+                        "type": "player_hp_update",
+                        "player_id": player_id,
+                        "hp": new_hp,
+                        "timestamp": current_time
+                    })
+
+                    broadcast_message(api_gateway_client, {
+                        "type": "bullet_removed",
+                        "bullet_id": bullet_id,
+                        "timestamp": current_time
+                    })
+
+                    return True  # Colisão detectada e processada
+
+        return False  # Nenhuma colisão detectada
+
+    except Exception as e:
+        print(f"❌ Erro na verificação imediata de colisões: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def check_bullet_collisions_periodic(api_gateway_client):
