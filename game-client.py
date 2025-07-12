@@ -173,7 +173,7 @@ class MultiplayerGame:
                             "y": int(float(data["y"])),
                             "team": data["team"],
                             "color": self.convert_color(data["color"]),
-                            "hp": data.get("hp", 100)
+                            "hp": 100  # HP padrão para novos jogadores
                         }
                         print(f"👋 Jogador {player_id} entrou no jogo (Time {data['team']})")
 
@@ -190,13 +190,26 @@ class MultiplayerGame:
                 player_id = data["player_id"]
                 if player_id != self.player_id:
                     try:
-                        self.other_players[player_id] = {
-                            "x": int(float(data["x"])),
-                            "y": int(float(data["y"])),
-                            "team": data["team"],
-                            "color": self.convert_color(data["color"]),
-                            "hp": data.get("hp", 100)
-                        }
+                        # Atualiza apenas posição e dados básicos, mantém HP existente
+                        if player_id in self.other_players:
+                            # Preserva HP existente
+                            current_hp = self.other_players[player_id].get("hp", 100)
+                            self.other_players[player_id].update({
+                                "x": int(float(data["x"])),
+                                "y": int(float(data["y"])),
+                                "team": data["team"],
+                                "color": self.convert_color(data["color"]),
+                                "hp": current_hp  # Mantém HP atual
+                            })
+                        else:
+                            # Novo jogador, usa HP padrão
+                            self.other_players[player_id] = {
+                                "x": int(float(data["x"])),
+                                "y": int(float(data["y"])),
+                                "team": data["team"],
+                                "color": self.convert_color(data["color"]),
+                                "hp": 100
+                            }
                     except (ValueError, TypeError) as e:
                         print(f"❌ Erro ao processar update do jogador {player_id}: {e}")
 
@@ -220,6 +233,18 @@ class MultiplayerGame:
                         if new_hp <= 0:
                             print(f"💀 {player_id} foi morto por {shooter_id}")
 
+            elif msg_type == "player_hp_update":
+                player_id = data["player_id"]
+                hp = data["hp"]
+                
+                if player_id == self.player_id:
+                    self.local_player["hp"] = hp
+                    # Não loga aqui para evitar duplicação com player_hit
+                else:
+                    if player_id in self.other_players:
+                        self.other_players[player_id]["hp"] = hp
+                        print(f"💚 HP de {player_id} sincronizado: {hp}")
+
             elif msg_type == "player_respawned":
                 player_id = data["player_id"]
                 if player_id == self.player_id:
@@ -234,6 +259,7 @@ class MultiplayerGame:
                         self.other_players[player_id]["hp"] = data["hp"]
                         self.other_players[player_id]["x"] = data["x"]
                         self.other_players[player_id]["y"] = data["y"]
+                        print(f"🔄 {player_id} respawnou!")
 
             elif msg_type == "bullet_shot":
                 bullet = data["bullet"]
@@ -512,6 +538,8 @@ class MultiplayerGame:
         except Exception as e:
             print(f"❌ Erro ao enviar ping: {e}")
 
+
+
     def update_bullets(self):
         """Atualiza posição das balas localmente e envia para o servidor"""
         if not self.connected or not self.ws:
@@ -650,6 +678,8 @@ class MultiplayerGame:
         if keys[pygame.K_q]:
             if self.local_player["carrying_flag"]:
                 self.send_drop_flag()
+                
+
 
     def try_capture_flag(self):
         """Tenta capturar bandeira próxima"""

@@ -270,6 +270,7 @@ def handle_message(connection_id: str, message: Dict[str, Any], api_gateway_clie
             return handle_ping(connection_id, api_gateway_client)
         elif action == "bullet_update":
             return handle_bullet_update(connection_id, message, api_gateway_client)
+
         else:
             print(f"❌ Ação desconhecida: {action}")
             send_message_to_connection(api_gateway_client, connection_id, {"type": "error", "message": f"Ação desconhecida: {action}"})
@@ -358,7 +359,6 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
             "color": TEAMS[team]["color"],
             "x": spawn_x,
             "y": spawn_y,
-            "hp": float(PLAYER_MAX_HP),  # Garante que é float
             "timestamp": int(time.time())
         }, exclude_connection=connection_id)
 
@@ -402,13 +402,8 @@ def handle_update_position(connection_id: str, message: Dict[str, Any], api_gate
         response = connections_table.get_item(Key={"connection_id": connection_id})
         player_data = response.get("Item", {})
         team = player_data.get("team")
-        hp = player_data.get("hp", PLAYER_MAX_HP)
-        
-        # Converte hp de Decimal para float se necessário
-        if isinstance(hp, Decimal):
-            hp = float(hp)
 
-        # Broadcast para outros jogadores
+        # Broadcast para outros jogadores (SEM incluir HP para evitar conflitos)
         broadcast_message(api_gateway_client, {
             "type": "player_update",
             "player_id": player_id,
@@ -416,7 +411,6 @@ def handle_update_position(connection_id: str, message: Dict[str, Any], api_gate
             "color": TEAMS[team]["color"],
             "x": x,
             "y": y,
-            "hp": hp,
             "timestamp": int(time.time())
         }, exclude_connection=connection_id)
 
@@ -646,6 +640,14 @@ def handle_respawn(connection_id: str, message: Dict[str, Any], api_gateway_clie
             "timestamp": int(time.time())
         })
 
+        # Broadcast específico de HP para sincronização (sem log redundante)
+        broadcast_message(api_gateway_client, {
+            "type": "player_hp_update",
+            "player_id": player_id,
+            "hp": PLAYER_MAX_HP,
+            "timestamp": int(time.time())
+        })
+
         return {"statusCode": 200, "body": "Jogador respawnou"}
 
     except Exception as e:
@@ -777,6 +779,9 @@ def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gatewa
         return {"statusCode": 500, "body": f"Erro ao processar atualização de bala: {str(e)}"}
 
 
+
+
+
 def check_bullet_collisions_periodic(api_gateway_client):
     """
     Verifica colisões de balas com jogadores periodicamente
@@ -826,6 +831,8 @@ def check_bullet_collisions_periodic(api_gateway_client):
 
                 player_x = player_data.get("x", 0)
                 player_y = player_data.get("y", 0)
+                player_hp = player_data.get("hp", PLAYER_MAX_HP)
+                print(f"      🎯 Verificando jogador {player_id} - HP atual: {player_hp} (tipo: {type(player_hp)})")
                 
                 # Distância entre projétil e jogador
                 if (bullet_x is not None and bullet_y is not None and 
@@ -843,7 +850,13 @@ def check_bullet_collisions_periodic(api_gateway_client):
                         print(f"   Dano: {BULLET_DAMAGE}")
                         
                         # Atingiu jogador
-                        new_hp = max(0, player_data.get("hp", PLAYER_MAX_HP) - BULLET_DAMAGE)
+                        current_hp = player_data.get("hp", PLAYER_MAX_HP)
+                        # Converte Decimal para float se necessário
+                        if isinstance(current_hp, Decimal):
+                            current_hp = float(current_hp)
+                        
+                        new_hp = max(0, current_hp - BULLET_DAMAGE)
+                        print(f"   HP atual: {current_hp}")
                         print(f"   Novo HP: {new_hp}")
                         
                         # Atualiza HP no DynamoDB
@@ -856,11 +869,22 @@ def check_bullet_collisions_periodic(api_gateway_client):
                                     Key={"connection_id": player_connection_id},
                                     UpdateExpression="SET hp = :hp, last_activity = :time",
                                     ExpressionAttributeValues={
-                                        ":hp": new_hp,
+                                        ":hp": Decimal(str(new_hp)),  # Converte para Decimal
                                         ":time": current_time
                                     }
                                 )
                                 print(f"   ✅ HP atualizado no DynamoDB para {new_hp}")
+                                
+                                # Verifica se foi salvo corretamente
+                                try:
+                                    verify_response = connections_table.get_item(Key={"connection_id": player_connection_id})
+                                    saved_hp = verify_response.get("Item", {}).get("hp")
+                                    if isinstance(saved_hp, Decimal):
+                                        saved_hp = float(saved_hp)
+                                    print(f"   🔍 HP verificado no DynamoDB: {saved_hp}")
+                                except Exception as verify_e:
+                                    print(f"   ⚠️ Erro ao verificar HP salvo: {verify_e}")
+                                    
                             except Exception as e:
                                 print(f"   ❌ Erro ao atualizar HP no DynamoDB: {e}")
                         else:
@@ -876,6 +900,14 @@ def check_bullet_collisions_periodic(api_gateway_client):
                             "damage": BULLET_DAMAGE,
                             "new_hp": new_hp,
                             "shooter_id": bullet["shooter_id"],
+                            "timestamp": current_time
+                        })
+
+                        # Broadcast específico de HP para sincronização
+                        broadcast_message(api_gateway_client, {
+                            "type": "player_hp_update",
+                            "player_id": player_id,
+                            "hp": new_hp,
                             "timestamp": current_time
                         })
 
