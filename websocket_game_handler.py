@@ -15,6 +15,9 @@ from botocore.exceptions import ClientError
 from decimal import Decimal
 
 
+# Versão do servidor para verificar se foi deployado
+SERVER_VERSION = "2.1.0-bullet-fix"
+
 # Configurações
 TABLE_NAME = os.environ.get("TABLE_NAME", "WebSocketConnections")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -134,6 +137,7 @@ def lambda_handler(event, context):
     Função principal para processar eventos WebSocket
     """
     try:
+        print(f"🚀 Servidor versão: {SERVER_VERSION}")
         print(f"📨 Evento recebido: {json.dumps(event, default=str)}")
 
         # Obtém informações da conexão
@@ -318,7 +322,7 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
         spawn_x = TEAMS[team]["spawn_x"]
         spawn_y = TEAMS[team]["spawn_y"]
 
-        print(f"🎮 Jogador {player_id} entrando no jogo no time {team} na posição ({spawn_x}, {spawn_y})")
+        print(f"🎮 Jogador {player_id} entrando no jogo no time {team} na posição ({spawn_x}, {spawn_y}) - Servidor v{SERVER_VERSION}")
 
         # Atualiza conexão com dados do jogador (converte float para Decimal)
         connections_table.update_item(
@@ -469,7 +473,7 @@ def handle_shoot(connection_id: str, message: Dict[str, Any], api_gateway_client
             dx = 0
             dy = BULLET_SPEED
 
-        current_time = int(time.time())
+        current_time = time.time()  # Use float para created_at
         bullet = {
             "id": bullet_id,
             "shooter_id": player_id,
@@ -479,10 +483,10 @@ def handle_shoot(connection_id: str, message: Dict[str, Any], api_gateway_client
             "dx": dx,
             "dy": dy,
             "created_at": current_time,
-            "ttl": current_time + 180  # 3 minutos = 180 segundos
+            "ttl": int(current_time) + 180  # TTL pode ser int
         }
 
-        print(f"   💾 Chamando save_bullet_dynamo para bala {bullet_id}")
+        print(f"   💾 Chamando save_bullet_dynamo para bala {bullet_id} - Servidor v{SERVER_VERSION}")
         save_bullet_dynamo(bullet)
         print(f"   ✅ Bala {bullet_id} salva no DynamoDB com TTL de 3 minutos")
 
@@ -1487,17 +1491,18 @@ def get_all_bullets_dynamo():
     try:
         response = bullets_table.scan()
         bullets = response.get("Items", [])
-        current_time = int(time.time())
+        current_time = time.time()  # Use float aqui
         
-        # Conta balas próximas de expirar (menos de 30 segundos)
-        expiring_soon = 0
+        # Filtra balas antigas (mais de 15 segundos)
+        filtered_bullets = []
         for bullet in bullets:
-            bullet_ttl = bullet.get("ttl", 0)
-            if bullet_ttl > 0 and bullet_ttl - current_time < 30:
-                expiring_soon += 1
+            bullet_created = bullet.get("created_at", 0)
+            bullet_age = current_time - bullet_created
+            if bullet_age < 15:  # Só retorna balas com menos de 15 segundos
+                filtered_bullets.append(bullet)
         
-        print(f"🔎 {len(bullets)} balas carregadas do DynamoDB ({expiring_soon} próximas de expirar)")
-        return bullets
+        print(f"🔎 {len(bullets)} balas no DynamoDB, {len(filtered_bullets)} balas recentes enviadas - Servidor v{SERVER_VERSION}")
+        return filtered_bullets
     except Exception as e:
         print(f"❌ Erro ao buscar balas do DynamoDB: {e}")
         return []
