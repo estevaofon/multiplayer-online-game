@@ -107,7 +107,7 @@ class MultiplayerGame:
 
         # Controle de atualização de balas
         self.last_bullet_update_time = 0
-        self.bullet_update_interval = 1 / 30  # 30 updates por segundo (mais frequente para colisões)
+        self.bullet_update_interval = 1 / 60  # 60 updates por segundo (mais frequente para colisões precisas)
 
         # Interface
         self.font = pygame.font.Font(None, 24)
@@ -605,6 +605,43 @@ class MultiplayerGame:
                 bullet["y"] < 0 or bullet["y"] > SCREEN_HEIGHT):
                 bullets_to_remove.append(bullet)
                 continue
+
+            # Verifica colisão local com caixas (para feedback visual imediato)
+            for box in self.collision_boxes:
+                box_x = box["x"]
+                box_y = box["y"]
+                box_size = box["size"]
+                
+                # Verificação por distância (método principal)
+                closest_x = max(box_x - box_size // 2, min(bullet["x"], box_x + box_size // 2))
+                closest_y = max(box_y - box_size // 2, min(bullet["y"], box_y + box_size // 2))
+                
+                # Calcula a distância entre a bala e o ponto mais próximo da caixa
+                distance_x = bullet["x"] - closest_x
+                distance_y = bullet["y"] - closest_y
+                distance = math.sqrt(distance_x * distance_x + distance_y * distance_y)
+                
+                # Verifica se a bala colide com a caixa (considerando o raio da bala)
+                if distance <= 5:  # Raio da bala (aumentado para maior precisão)
+                    print(f"   📦 COLISÃO LOCAL DETECTADA! Bala {bullet.get('id')} atingiu caixa {box['id']}")
+                    print(f"      Distância: {distance:.2f} <= 5")
+                    bullets_to_remove.append(bullet)
+                    break
+                
+                # Verificação adicional: se a bala passou muito perto da borda
+                # Calcula se a bala está dentro da área expandida da caixa
+                expanded_size = box_size + 10  # Área expandida para capturar balas rápidas
+                if (bullet["x"] >= box_x - expanded_size // 2 and 
+                    bullet["x"] <= box_x + expanded_size // 2 and
+                    bullet["y"] >= box_y - expanded_size // 2 and 
+                    bullet["y"] <= box_y + expanded_size // 2):
+                    
+                    # Verifica se está realmente próximo da caixa original
+                    if distance <= 8:  # Distância maior para balas rápidas
+                        print(f"   📦 COLISÃO LOCAL (ÁREA EXPANDIDA)! Bala {bullet.get('id')} atingiu caixa {box['id']}")
+                        print(f"      Distância: {distance:.2f} <= 8")
+                        bullets_to_remove.append(bullet)
+                        break
 
             # Se é uma bala do jogador local, envia atualização para o servidor
             if bullet.get("shooter_id") == self.player_id:

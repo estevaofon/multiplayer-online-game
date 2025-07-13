@@ -104,6 +104,7 @@ RESPAWN_TIME = 5  # segundos
 BOX_SIZE = 40  # Tamanho das caixas quadradas
 NUM_BOXES = 8  # Número de caixas a serem geradas
 BOX_MIN_DISTANCE = 80  # Distância mínima entre caixas e outros objetos
+BULLET_COLLISION_RADIUS = 5  # Raio de colisão da bala (aumentado para maior precisão)
 
 # Times
 TEAMS = {
@@ -1063,6 +1064,55 @@ def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gatewa
 
 
 
+def check_line_box_collision(start_x, start_y, end_x, end_y, box_x, box_y, box_size):
+    """
+    Verifica se uma linha (trajetória da bala) colide com uma caixa
+    Usa algoritmo de ray casting para maior precisão
+    """
+    # Calcula a direção da linha
+    dx = end_x - start_x
+    dy = end_y - start_y
+    
+    # Se a linha é muito pequena, verifica apenas o ponto final
+    if abs(dx) < 0.1 and abs(dy) < 0.1:
+        closest_x = max(box_x - box_size // 2, min(end_x, box_x + box_size // 2))
+        closest_y = max(box_y - box_size // 2, min(end_y, box_y + box_size // 2))
+        distance = math.sqrt((end_x - closest_x) ** 2 + (end_y - closest_y) ** 2)
+        return distance <= BULLET_COLLISION_RADIUS
+    
+    # Calcula os parâmetros da linha
+    length = math.sqrt(dx * dx + dy * dy)
+    if length == 0:
+        return False
+    
+    # Normaliza a direção
+    dx /= length
+    dy /= length
+    
+    # Calcula os pontos de interseção com as bordas da caixa
+    t_min = (box_x - box_size // 2 - start_x) / dx if dx != 0 else float('-inf')
+    t_max = (box_x + box_size // 2 - start_x) / dx if dx != 0 else float('inf')
+    
+    if t_min > t_max:
+        t_min, t_max = t_max, t_min
+    
+    ty_min = (box_y - box_size // 2 - start_y) / dy if dy != 0 else float('-inf')
+    ty_max = (box_y + box_size // 2 - start_y) / dy if dy != 0 else float('inf')
+    
+    if ty_min > ty_max:
+        ty_min, ty_max = ty_max, ty_min
+    
+    # Encontra a interseção
+    t_enter = max(t_min, ty_min)
+    t_exit = min(t_max, ty_max)
+    
+    # Verifica se há interseção
+    if t_enter <= t_exit and t_enter >= 0 and t_enter <= length:
+        return True
+    
+    return False
+
+
 def check_bullet_collisions_immediate(api_gateway_client, bullet_id: str, bullet_x: float, bullet_y: float):
     """
     Verifica colisões de uma bala específica imediatamente
@@ -1084,13 +1134,19 @@ def check_bullet_collisions_immediate(api_gateway_client, bullet_id: str, bullet
             box_y = box["y"]
             box_size = box["size"]
             
-            # Verifica se a bala está dentro da caixa
-            if (bullet_x >= box_x - box_size // 2 and 
-                bullet_x <= box_x + box_size // 2 and
-                bullet_y >= box_y - box_size // 2 and 
-                bullet_y <= box_y + box_size // 2):
-                
+            # Verificação por distância (método principal)
+            closest_x = max(box_x - box_size // 2, min(bullet_x, box_x + box_size // 2))
+            closest_y = max(box_y - box_size // 2, min(bullet_y, box_y + box_size // 2))
+            
+            # Calcula a distância entre a bala e o ponto mais próximo da caixa
+            distance_x = bullet_x - closest_x
+            distance_y = bullet_y - closest_y
+            distance = math.sqrt(distance_x * distance_x + distance_y * distance_y)
+            
+            # Verifica se a bala colide com a caixa (considerando o raio da bala)
+            if distance <= BULLET_COLLISION_RADIUS:
                 print(f"📦 COLISÃO COM CAIXA! Bala {bullet_id} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                print(f"   Distância: {distance:.2f} <= {BULLET_COLLISION_RADIUS}")
                 
                 # Remove a bala
                 delete_bullet_dynamo(bullet_id)
@@ -1250,13 +1306,44 @@ def check_bullet_collisions_periodic(api_gateway_client):
                 box_y = box["y"]
                 box_size = box["size"]
                 
-                # Verifica se a bala está dentro da caixa
-                if (bullet_x >= box_x - box_size // 2 and 
-                    bullet_x <= box_x + box_size // 2 and
-                    bullet_y >= box_y - box_size // 2 and 
-                    bullet_y <= box_y + box_size // 2):
-                    
-                    print(f"   📦 COLISÃO COM CAIXA! Bala {bullet['id']} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                # Tenta usar ray casting se temos informações da trajetória
+                if "dx" in bullet and "dy" in bullet:
+                    # Calcula posição anterior da bala
+                    bullet_speed = math.sqrt(bullet["dx"]**2 + bullet["dy"]**2)
+                    if bullet_speed > 0:
+                        prev_x = bullet_x - bullet["dx"] / bullet_speed * 2  # 2 pixels atrás
+                        prev_y = bullet_y - bullet["dy"] / bullet_speed * 2
+                        
+                        # Verifica colisão da linha de trajetória
+                        if check_line_box_collision(prev_x, prev_y, bullet_x, bullet_y, box_x, box_y, box_size):
+                            print(f"   📦 COLISÃO COM CAIXA (RAY CASTING)! Bala {bullet['id']} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                            
+                            # Remove a bala
+                            bullets_to_remove.append(bullet)
+                            
+                            # Broadcast da remoção da bala
+                            broadcast_message(api_gateway_client, {
+                                "type": "bullet_removed",
+                                "bullet_id": bullet["id"],
+                                "timestamp": current_time
+                            })
+                            
+                            break  # Bala já atingiu uma caixa, não precisa verificar outras
+                            continue
+                
+                # Fallback: verificação por distância
+                closest_x = max(box_x - box_size // 2, min(bullet_x, box_x + box_size // 2))
+                closest_y = max(box_y - box_size // 2, min(bullet_y, box_y + box_size // 2))
+                
+                # Calcula a distância entre a bala e o ponto mais próximo da caixa
+                distance_x = bullet_x - closest_x
+                distance_y = bullet_y - closest_y
+                distance = math.sqrt(distance_x * distance_x + distance_y * distance_y)
+                
+                # Verifica se a bala colide com a caixa (considerando o raio da bala)
+                if distance <= BULLET_COLLISION_RADIUS:
+                    print(f"   📦 COLISÃO COM CAIXA (DISTÂNCIA)! Bala {bullet['id']} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                    print(f"      Distância: {distance:.2f} <= {BULLET_COLLISION_RADIUS}")
                     
                     # Remove a bala
                     bullets_to_remove.append(bullet)
