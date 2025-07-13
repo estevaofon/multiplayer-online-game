@@ -273,13 +273,16 @@ def reset_game_state():
         print(f"❌ Erro ao resetar estado do jogo: {str(e)}")
         return False
 
-# Estado global do jogo
-print("🚀 INICIALIZANDO ESTADO GLOBAL DO JOGO")
-game_state = load_game_state()
-print(f"🎮 Estado inicial do jogo carregado: scores={game_state['scores']}")
-print(f"🔍 Tipo do game_state: {type(game_state)}")
-print(f"🔍 Tipo dos scores: {type(game_state['scores'])}")
-print(f"🔍 Conteúdo completo do game_state: {json.dumps(game_state, default=str)}")
+# Estado global do jogo (será recarregado a cada invocação)
+game_state = {
+    "flags": {
+        "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+        "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+    },
+    "bullets": [],
+    "scores": {"red": 0, "blue": 0},
+    "game_started": False
+}
 
 
 def lambda_handler(event, context):
@@ -287,6 +290,12 @@ def lambda_handler(event, context):
     Função principal para processar eventos WebSocket
     """
     try:
+        # Carrega o estado do jogo do DynamoDB a cada invocação
+        global game_state
+        print("🚀 CARREGANDO ESTADO DO JOGO DO DYNAMODB")
+        game_state = load_game_state()
+        print(f"🎮 Estado do jogo carregado: scores={game_state['scores']}")
+        
         print(f"🚀 Servidor versão: {SERVER_VERSION}")
         print(f"📨 Evento recebido: {json.dumps(event, default=str)}")
 
@@ -1286,37 +1295,6 @@ def check_flag_scoring(api_gateway_client):
 
             if distance < BASE_SIZE // 2:
                 print(f"🏆 PONTO! {carrier_team} marcou ponto com bandeira {flag_team}!")
-                
-                # CONSULTA O DYNAMODB ANTES DE ATUALIZAR O SCORE
-                print(f"🔍 CONSULTANDO DYNAMODB ANTES DE ATUALIZAR SCORE...")
-                try:
-                    response = game_state_table.get_item(Key={"id": "current_game"})
-                    if "Item" in response:
-                        current_scores = response["Item"].get("scores", {"red": 0, "blue": 0})
-                        # Converte de Decimal para int
-                        dynamo_scores = {}
-                        for team, score in current_scores.items():
-                            if isinstance(score, Decimal):
-                                dynamo_scores[team] = int(score)
-                            else:
-                                dynamo_scores[team] = score
-                        
-                        print(f"🔍 Scores atuais no DynamoDB: {dynamo_scores}")
-                        print(f"🔍 Scores no game_state local: {game_state['scores']}")
-                        
-                        # Usa os scores do DynamoDB como fonte da verdade
-                        game_state["scores"] = dynamo_scores.copy()
-                        print(f"🔍 Game state atualizado com scores do DynamoDB: {game_state['scores']}")
-                    else:
-                        print(f"⚠️ Nenhum item encontrado no DynamoDB, usando scores locais")
-                except Exception as e:
-                    print(f"❌ Erro ao consultar DynamoDB: {e}")
-                    print(f"⚠️ Usando scores locais como fallback")
-                
-                # Log dos scores antes do ponto
-                print(f"🔍 Scores ANTES do ponto: {game_state['scores']}")
-                print(f"🔍 Time que marcou: {carrier_team}")
-                print(f"🔍 Score atual do time {carrier_team}: {game_state['scores'].get(carrier_team, 0)}")
                 
                 # Ponto para o time do portador
                 old_score = game_state["scores"].get(carrier_team, 0)
