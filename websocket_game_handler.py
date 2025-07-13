@@ -101,9 +101,9 @@ PLAYER_MAX_HP = 100
 RESPAWN_TIME = 5  # segundos
 
 # Configurações das caixas de colisão
-BOX_SIZE = 40  # Tamanho das caixas quadradas
-NUM_BOXES = 8  # Número de caixas a serem geradas
-BOX_MIN_DISTANCE = 80  # Distância mínima entre caixas e outros objetos
+BOX_SIZE = 50  # Tamanho das caixas quadradas (aumentado para melhor visibilidade)
+NUM_BOXES = 12  # Número de caixas a serem geradas (aumentado para mais estratégia)
+BOX_MIN_DISTANCE = 100  # Distância mínima entre caixas e outros objetos (aumentado)
 
 # Times
 TEAMS = {
