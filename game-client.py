@@ -659,6 +659,32 @@ class MultiplayerGame:
         except Exception as e:
             print(f"❌ Erro ao enviar atualização de bala: {e}")
 
+    def check_box_collision(self, new_x, new_y):
+        """Verifica se a nova posição colide com alguma caixa"""
+        player_radius = PLAYER_SIZE
+        
+        for box in self.collision_boxes:
+            try:
+                box_x = int(box.get("x", 0))
+                box_y = int(box.get("y", 0))
+                box_size = int(box.get("size", BOX_SIZE))
+                
+                # Calcula a distância entre o centro do jogador e o centro da caixa
+                dx = new_x - box_x
+                dy = new_y - box_y
+                distance = math.sqrt(dx*dx + dy*dy)
+                
+                # Se a distância for menor que a soma dos raios, há colisão
+                min_distance = player_radius + box_size // 2
+                if distance < min_distance:
+                    return True  # Há colisão
+                    
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao verificar colisão com caixa {box.get('id')}: {e}")
+                continue
+                
+        return False  # Não há colisão
+
     def handle_input(self):
         """Processa entrada do usuário"""
         keys = pygame.key.get_pressed()
@@ -686,12 +712,28 @@ class MultiplayerGame:
             dx *= 0.707
             dy *= 0.707
 
-        # Atualiza posição
+        # Calcula nova posição
         new_x = max(0, min(SCREEN_WIDTH - PLAYER_SIZE, self.local_player["x"] + dx))
         new_y = max(0, min(SCREEN_HEIGHT - PLAYER_SIZE, self.local_player["y"] + dy))
         
-        self.local_player["x"] = new_x
-        self.local_player["y"] = new_y
+        # Verifica colisão com caixas
+        if not self.check_box_collision(new_x, new_y):
+            # Se não há colisão, atualiza a posição
+            self.local_player["x"] = new_x
+            self.local_player["y"] = new_y
+        else:
+            # Se há colisão, tenta movimento apenas no eixo X ou Y
+            if dx != 0:
+                # Tenta movimento apenas no eixo X
+                test_x = max(0, min(SCREEN_WIDTH - PLAYER_SIZE, self.local_player["x"] + dx))
+                if not self.check_box_collision(test_x, self.local_player["y"]):
+                    self.local_player["x"] = test_x
+            
+            if dy != 0:
+                # Tenta movimento apenas no eixo Y
+                test_y = max(0, min(SCREEN_HEIGHT - PLAYER_SIZE, self.local_player["y"] + dy))
+                if not self.check_box_collision(self.local_player["x"], test_y):
+                    self.local_player["y"] = test_y
 
         # Tiro com clique do mouse - Versão melhorada
         mouse_buttons = pygame.mouse.get_pressed()
@@ -711,7 +753,6 @@ class MultiplayerGame:
         if keys[pygame.K_q]:
             if self.local_player["carrying_flag"]:
                 self.send_drop_flag()
-                
 
 
     def try_capture_flag(self):
@@ -746,17 +787,24 @@ class MultiplayerGame:
                 pygame.draw.rect(self.screen, flag_color, (flag["x"] - FLAG_SIZE//2, flag["y"] - FLAG_SIZE//2, FLAG_SIZE, FLAG_SIZE))
                 pygame.draw.rect(self.screen, (255, 255, 255), (flag["x"] - FLAG_SIZE//2, flag["y"] - FLAG_SIZE//2, FLAG_SIZE, FLAG_SIZE), 2)
 
-        # Desenha caixas de colisão
+        # Desenha caixas de colisão (obstáculos)
         for box in self.collision_boxes:
             try:
                 x = int(box.get("x", 0))
                 y = int(box.get("y", 0))
                 size = int(box.get("size", BOX_SIZE))
                 
-                # Desenha a caixa com cor marrom
-                pygame.draw.rect(self.screen, (139, 69, 19), (x - size // 2, y - size // 2, size, size))
-                # Borda da caixa
-                pygame.draw.rect(self.screen, (101, 67, 33), (x - size // 2, y - size // 2, size, size), 2)
+                # Desenha a caixa com cor marrom escura (obstáculo)
+                pygame.draw.rect(self.screen, (101, 67, 33), (x - size // 2, y - size // 2, size, size))
+                # Borda mais escura para destacar
+                pygame.draw.rect(self.screen, (69, 47, 22), (x - size // 2, y - size // 2, size, size), 3)
+                # Adiciona um "X" para indicar que é um obstáculo
+                pygame.draw.line(self.screen, (255, 255, 255), 
+                               (x - size // 4, y - size // 4), 
+                               (x + size // 4, y + size // 4), 2)
+                pygame.draw.line(self.screen, (255, 255, 255), 
+                               (x + size // 4, y - size // 4), 
+                               (x - size // 4, y + size // 4), 2)
             except (ValueError, TypeError) as e:
                 print(f"❌ Erro ao desenhar caixa {box.get('id')}: {e}")
 
@@ -894,7 +942,8 @@ class MultiplayerGame:
             "ESC - Sair",
             "",
             "📦 Caixas marrons:",
-            "Barreiras defensivas"
+            "Obstáculos intransponíveis",
+            "Use como cobertura!"
         ]
         
         for i, control in enumerate(controls):
