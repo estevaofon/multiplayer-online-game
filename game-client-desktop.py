@@ -23,7 +23,7 @@ SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 PLAYER_SIZE = 20
 PLAYER_SPEED = 5
-FPS = 60
+FPS = 60  # 60 FPS para melhor responsividade
 BULLET_SIZE = 5
 FLAG_SIZE = 30
 BASE_SIZE = 100
@@ -557,6 +557,9 @@ class MultiplayerGame:
         if not self.connected or not self.ws:
             return
 
+        # REMOVIDO: Sistema de detecção de plataforma
+        # Todas as balas são processadas igualmente em todas as plataformas
+
         # Debug: mostra que a função está sendo chamada
         current_time = time.time()
         if self.bullets:
@@ -566,7 +569,7 @@ class MultiplayerGame:
                 bullet_age = current_time - bullet.get("created_at", 0)
                 print(f"   Bala {i+1}: {bullet.get('id')} - idade: {bullet_age:.1f}s - pos: ({bullet.get('x', 0):.1f}, {bullet.get('y', 0):.1f})")
         else:
-            # Debug adicional - verifica se não há balas
+            # Debug adicional para desktop - verifica se não há balas
             if current_time - getattr(self, 'last_bullet_debug_time', 0) > 5:  # A cada 5 segundos
                 print(f"🔍 Debug: Nenhuma bala ativa - Player ID: {self.player_id} - Connected: {self.connected}")
                 self.last_bullet_debug_time = current_time
@@ -579,7 +582,8 @@ class MultiplayerGame:
             print(f"🔍 Processando {len(self.bullets)} balas...")
 
         for bullet in self.bullets:
-            # REMOVIDO: Filtro de idade das balas - todas as balas são processadas independente da idade
+            # REMOVIDO COMPLETAMENTE: Filtro de idade das balas
+            # Todas as balas são processadas independente da idade
             bullet_created = bullet.get("created_at", 0)
             bullet_age = current_time - bullet_created
             
@@ -684,7 +688,7 @@ class MultiplayerGame:
         self.local_player["x"] = new_x
         self.local_player["y"] = new_y
 
-        # Tiro com clique do mouse - Versão melhorada
+        # Tiro com clique do mouse - Versão melhorada para desktop
         mouse_buttons = pygame.mouse.get_pressed()
         if mouse_buttons[0]:  # Botão esquerdo
             mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -952,7 +956,7 @@ class MultiplayerGame:
             pygame.display.flip()
             current_fps = self.clock.tick(FPS)
             
-            # Debug de performance
+            # Debug de performance para desktop
             if hasattr(self, 'last_performance_check'):
                 if time.time() - self.last_performance_check > 10:  # A cada 10 segundos
                     print(f"📊 Performance: FPS atual: {current_fps:.1f}, Target: {FPS}")
@@ -1004,4 +1008,3 @@ if __name__ == "__main__":
     finally:
         game.disconnect()
         pygame.quit()
-
