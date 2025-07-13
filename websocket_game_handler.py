@@ -632,18 +632,25 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
         spawn_x = TEAMS[team]["spawn_x"]
         spawn_y = TEAMS[team]["spawn_y"]
 
-        print(f"🎮 Jogador {player_id} entrando no jogo no time {team} na posição ({spawn_x}, {spawn_y}) - Servidor v{SERVER_VERSION}")
+        # Atribui sprite baseada no time
+        if team == "red":
+            sprite = "sprite4"  # Time vermelho usa sprite4
+        else:  # blue
+            sprite = "sprite5"  # Time azul usa sprite5
+
+        print(f"🎮 Jogador {player_id} entrando no jogo no time {team} na posição ({spawn_x}, {spawn_y}) com sprite {sprite} - Servidor v{SERVER_VERSION}")
 
         # Atualiza conexão com dados do jogador (converte float para Decimal)
         connections_table.update_item(
             Key={"connection_id": connection_id},
-            UpdateExpression="SET player_id = :pid, team = :team, hp = :hp, x = :x, y = :y, last_activity = :time",
+            UpdateExpression="SET player_id = :pid, team = :team, hp = :hp, x = :x, y = :y, sprite = :sprite, last_activity = :time",
             ExpressionAttributeValues={
                 ":pid": player_id,
                 ":team": team,
                 ":hp": PLAYER_MAX_HP,
                 ":x": Decimal(str(spawn_x)),
                 ":y": Decimal(str(spawn_y)),
+                ":sprite": sprite,
                 ":time": int(time.time())
             }
         )
@@ -655,7 +662,8 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
             "color": TEAMS[team]["color"],
             "x": spawn_x,
             "y": spawn_y,
-            "hp": PLAYER_MAX_HP
+            "hp": PLAYER_MAX_HP,
+            "sprite": sprite
         }
 
         send_message_to_connection(api_gateway_client, connection_id, {
@@ -673,6 +681,7 @@ def handle_join_game(connection_id: str, message: Dict[str, Any], api_gateway_cl
             "color": TEAMS[team]["color"],
             "x": spawn_x,
             "y": spawn_y,
+            "sprite": sprite,
             "timestamp": int(time.time())
         }, exclude_connection=connection_id)
 

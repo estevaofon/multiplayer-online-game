@@ -168,21 +168,31 @@ class MultiplayerGame:
         except (ValueError, TypeError):
             return [255, 255, 255]  # Branco padrão em caso de erro
 
-    def get_player_animation(self, player_id, team):
+    def get_player_animation(self, player_id, team, sprite=None):
         """Obtém ou cria uma animação para um player específico"""
         if player_id not in self.player_animations:
-            # Usa as animações já definidas baseadas no time
-            if team == "red":
-                animation = self.animation_red
-            else:  # blue
-                animation = self.animation_blue
+            # Usa o sprite especificado pelo servidor ou fallback para o time
+            if sprite:
+                # Cria animação baseada no sprite do servidor
+                animation = ScalableAnimation(f"assets/{sprite}.png", scale=0.7)
+                if team == "red":
+                    animation.facing_right = True
+                else:  # blue
+                    animation.facing_right = False
+                animation.create_animation(160, 360, 140, 140, "run", repeat=True, duration=150, rows=1, cols=8)
+            else:
+                # Fallback para as animações já definidas baseadas no time
+                if team == "red":
+                    animation = self.animation_red
+                else:  # blue
+                    animation = self.animation_blue
             
             self.player_animations[player_id] = animation
             self.last_positions[player_id] = {"x": 0, "y": 0}
         
         return self.player_animations[player_id]
 
-    def update_player_animation(self, player_id, x, y, team):
+    def update_player_animation(self, player_id, x, y, team, sprite=None):
         """Atualiza a animação de um player baseado em seu movimento"""
         if player_id not in self.last_positions:
             self.last_positions[player_id] = {"x": x, "y": y}
@@ -194,7 +204,7 @@ class MultiplayerGame:
         
         # Se o player se moveu, atualiza a animação
         if distance > self.movement_threshold:
-            animation = self.get_player_animation(player_id, team)
+            animation = self.get_player_animation(player_id, team, sprite)
             animation.run("run")
             
             # Detecta direção do movimento para ajustar facing_right
@@ -210,7 +220,7 @@ class MultiplayerGame:
         else:
             # Se não está se movendo, mantém a última direção
             if player_id in self.last_directions:
-                animation = self.get_player_animation(player_id, team)
+                animation = self.get_player_animation(player_id, team, sprite)
                 if self.last_directions[player_id] > 0:
                     animation.facing_right = True
                 elif self.last_directions[player_id] < 0:
@@ -232,11 +242,13 @@ class MultiplayerGame:
         """Atualiza todas as animações dos players"""
         # Atualiza animação do jogador local
         if self.local_player["team"] and not self.dead:
-            self.update_player_animation(self.player_id, self.local_player["x"], self.local_player["y"], self.local_player["team"])
+            sprite = self.local_player.get("sprite")
+            self.update_player_animation(self.player_id, self.local_player["x"], self.local_player["y"], self.local_player["team"], sprite)
         
         # Atualiza animações dos outros jogadores
         for player_id, player_data in self.other_players.items():
-            self.update_player_animation(player_id, player_data["x"], player_data["y"], player_data["team"])
+            sprite = player_data.get("sprite")
+            self.update_player_animation(player_id, player_data["x"], player_data["y"], player_data["team"], sprite)
 
     def on_websocket_message(self, ws, message):
         """Processa mensagens recebidas via WebSocket"""
@@ -280,24 +292,28 @@ class MultiplayerGame:
                     self.local_player["x"] = player_data["x"]
                     self.local_player["y"] = player_data["y"]
                     self.local_player["hp"] = player_data["hp"]
+                    self.local_player["sprite"] = player_data.get("sprite")
                     self.game_started = True
                     
                     # Inicializa animação do jogador local
-                    self.update_player_animation(self.player_id, player_data["x"], player_data["y"], player_data["team"])
+                    sprite = player_data.get("sprite")
+                    self.update_player_animation(self.player_id, player_data["x"], player_data["y"], player_data["team"], sprite)
                     
                     print(f"✅ Você entrou no jogo! Time: {player_data['team']} - Player ID: {self.player_id}")
                 else:
                     # Mensagem para outros jogadores
                     player_id = data["player_id"]
                     if player_id != self.player_id:
+                        sprite = data.get("sprite")
                         self.other_players[player_id] = {
                             "x": int(float(data["x"])),
                             "y": int(float(data["y"])),
                             "team": data["team"],
                             "color": self.convert_color(data["color"]),
+                            "sprite": sprite,
                             "hp": 100  # HP padrão para novos jogadores
                         }
-                        print(f"👋 Jogador {player_id} entrou no jogo (Time {data['team']})")
+                        print(f"👋 Jogador {player_id} entrou no jogo (Time {data['team']}) com sprite {sprite}")
 
             elif msg_type == "player_left":
                 player_id = data["player_id"]
@@ -318,6 +334,8 @@ class MultiplayerGame:
                         y = int(float(data["y"]))
                         team = data["team"]
                         
+                        sprite = data.get("sprite")
+                        
                         # Atualiza apenas posição e dados básicos, mantém HP existente
                         if player_id in self.other_players:
                             # Preserva HP existente
@@ -327,6 +345,7 @@ class MultiplayerGame:
                                 "y": y,
                                 "team": team,
                                 "color": self.convert_color(data["color"]),
+                                "sprite": sprite,
                                 "hp": current_hp  # Mantém HP atual
                             })
                         else:
@@ -336,11 +355,12 @@ class MultiplayerGame:
                                 "y": y,
                                 "team": team,
                                 "color": self.convert_color(data["color"]),
+                                "sprite": sprite,
                                 "hp": 100
                             }
                         
                         # Atualiza animação do player
-                        self.update_player_animation(player_id, x, y, team)
+                        self.update_player_animation(player_id, x, y, team, sprite)
                     except (ValueError, TypeError) as e:
                         print(f"❌ Erro ao processar update do jogador {player_id}: {e}")
 
@@ -878,7 +898,8 @@ class MultiplayerGame:
 
         # Atualiza animação do jogador local se ele se moveu
         if dx != 0 or dy != 0:
-            self.update_player_animation(self.player_id, self.local_player["x"], self.local_player["y"], self.local_player["team"])
+            sprite = self.local_player.get("sprite")
+            self.update_player_animation(self.player_id, self.local_player["x"], self.local_player["y"], self.local_player["team"], sprite)
 
         # Tiro com clique do mouse - Versão melhorada
         mouse_buttons = pygame.mouse.get_pressed()
@@ -1003,7 +1024,8 @@ class MultiplayerGame:
             
             # Desenha animação do player
             try:
-                animation = self.get_player_animation(player_id, team)
+                sprite = player_data.get("sprite")
+                animation = self.get_player_animation(player_id, team, sprite)
                 animation_surface = animation.update_surface()
                 
                 # Centraliza a animação na posição do player
@@ -1042,7 +1064,8 @@ class MultiplayerGame:
             
             # Desenha animação do jogador local
             try:
-                animation = self.get_player_animation(self.player_id, team)
+                sprite = self.local_player.get("sprite")
+                animation = self.get_player_animation(self.player_id, team, sprite)
                 animation_surface = animation.update_surface()
                 
                 # Centraliza a animação na posição do player
