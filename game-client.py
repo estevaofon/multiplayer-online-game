@@ -609,9 +609,9 @@ class MultiplayerGame:
                     bullets_to_remove.append(bullet)
                     continue
                 
-                # Calcula nova posição
-                new_x = x + dx * speed
-                new_y = y + dy * speed
+                # Calcula nova posição (velocidade fixa de 5 pixels por frame)
+                new_x = x + dx * 5
+                new_y = y + dy * 5
                 
                 # Verifica colisão com caixas localmente
                 if self.check_bullet_box_collision(new_x, new_y):
