@@ -189,6 +189,9 @@ def generate_collision_boxes():
             print(f"📦 Caixa de colisão gerada em ({x}, {y})")
     
     print(f"✅ Geradas {len(boxes)} caixas de colisão")
+    # Log das posições das caixas geradas
+    for i, box in enumerate(boxes):
+        print(f"   Caixa {i}: {box['id']} em ({box['x']}, {box['y']})")
     return boxes
 
 
@@ -225,10 +228,34 @@ def load_game_state():
             
             print(f"🔍 Scores convertidos: {converted_scores}")
             
-            # Carrega caixas de colisão ou gera novas se não existirem
+            # Carrega caixas de colisão do DynamoDB
             collision_boxes = item.get("collision_boxes", [])
             if not collision_boxes:
+                print("📦 Nenhuma caixa de colisão encontrada no DynamoDB, gerando novas...")
                 collision_boxes = generate_collision_boxes()
+                # Salva as caixas geradas no DynamoDB para uso futuro
+                item_to_save = {
+                    "id": "current_game",
+                    "flags": item.get("flags", {
+                        "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                        "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+                    }),
+                    "bullets": item.get("bullets", []),
+                    "scores": converted_scores,
+                    "game_started": item.get("game_started", False),
+                    "collision_boxes": collision_boxes,
+                    "last_updated": int(time.time()),
+                    "expires_at": int(time.time()) + 86400
+                }
+                game_state_table.put_item(Item=item_to_save)
+                print("💾 Caixas de colisão salvas no DynamoDB")
+            else:
+                print(f"📦 Carregadas {len(collision_boxes)} caixas de colisão do DynamoDB")
+                # Log das posições das caixas carregadas
+                for i, box in enumerate(collision_boxes):
+                    print(f"   Caixa {i}: {box.get('id', 'sem_id')} em ({box.get('x', 0)}, {box.get('y', 0)})")
+                # NÃO regenera caixas - usa as que estão no DynamoDB
+                print("✅ Usando caixas existentes do DynamoDB")
             
             result = {
                 "flags": item.get("flags", {
@@ -244,14 +271,16 @@ def load_game_state():
             print(f"🔍 Estado retornado: {json.dumps(result, default=str)}")
             return result
         else:
-            print("📝 NENHUM ESTADO PERSISTIDO ENCONTRADO - USANDO ESTADO PADRÃO")
+            print("📝 NENHUM ESTADO PERSISTIDO ENCONTRADO - GERANDO NOVO ESTADO")
             default_scores = {"red": 0, "blue": 0}
             print(f"🔍 Scores padrão definidos: {default_scores}")
             
             # Gera caixas de colisão para novo jogo
             collision_boxes = generate_collision_boxes()
             
-            result = {
+            # Salva o novo estado no DynamoDB imediatamente
+            new_state = {
+                "id": "current_game",
                 "flags": {
                     "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
                     "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
@@ -259,7 +288,20 @@ def load_game_state():
                 "bullets": [],
                 "scores": default_scores,
                 "game_started": False,
-                "collision_boxes": collision_boxes
+                "collision_boxes": collision_boxes,
+                "last_updated": int(time.time()),
+                "expires_at": int(time.time()) + 86400
+            }
+            
+            game_state_table.put_item(Item=new_state)
+            print("💾 Novo estado salvo no DynamoDB com caixas de colisão")
+            
+            result = {
+                "flags": new_state["flags"],
+                "bullets": new_state["bullets"],
+                "scores": new_state["scores"],
+                "game_started": new_state["game_started"],
+                "collision_boxes": new_state["collision_boxes"]
             }
             
             print(f"🔍 Estado padrão retornado: {json.dumps(result, default=str)}")
@@ -268,6 +310,27 @@ def load_game_state():
         print(f"❌ Erro ao carregar estado do jogo: {str(e)}")
         # Retorna estado padrão em caso de erro
         collision_boxes = generate_collision_boxes()
+        
+        # Tenta salvar o estado de erro no DynamoDB
+        try:
+            error_state = {
+                "id": "current_game",
+                "flags": {
+                    "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                    "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+                },
+                "bullets": [],
+                "scores": {"red": 0, "blue": 0},
+                "game_started": False,
+                "collision_boxes": collision_boxes,
+                "last_updated": int(time.time()),
+                "expires_at": int(time.time()) + 86400
+            }
+            game_state_table.put_item(Item=error_state)
+            print("💾 Estado de erro salvo no DynamoDB")
+        except Exception as save_error:
+            print(f"⚠️ Erro ao salvar estado de erro: {save_error}")
+        
         return {
             "flags": {
                 "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
@@ -364,7 +427,7 @@ game_state = {
     "bullets": [],
     "scores": {"red": 0, "blue": 0},
     "game_started": False,
-    "collision_boxes": []
+    "collision_boxes": []  # Será carregado do DynamoDB
 }
 
 
@@ -378,6 +441,9 @@ def lambda_handler(event, context):
         print("🚀 CARREGANDO ESTADO DO JOGO DO DYNAMODB")
         game_state = load_game_state()
         print(f"🎮 Estado do jogo carregado: scores={game_state['scores']}")
+        print(f"📦 Caixas carregadas: {len(game_state.get('collision_boxes', []))}")
+        for i, box in enumerate(game_state.get('collision_boxes', [])):
+            print(f"   Caixa {i}: {box.get('id', 'sem_id')} em ({box.get('x', 0)}, {box.get('y', 0)})")
         
         print(f"🚀 Servidor versão: {SERVER_VERSION}")
         print(f"📨 Evento recebido: {json.dumps(event, default=str)}")
@@ -1494,6 +1560,12 @@ def send_game_state(api_gateway_client, connection_id):
         print(f"🔍 Tipo dos scores: {type(current_scores)}")
         print(f"🔍 Conteúdo dos scores: {current_scores}")
         
+        # Log das caixas que serão enviadas
+        collision_boxes = game_state.get("collision_boxes", [])
+        print(f"📦 Enviando {len(collision_boxes)} caixas de colisão para {connection_id}")
+        for i, box in enumerate(collision_boxes):
+            print(f"   Caixa {i}: {box.get('id', 'sem_id')} em ({box.get('x', 0)}, {box.get('y', 0)})")
+        
         game_state_message = {
             "type": "game_state",
             "players": active_players,
@@ -1501,7 +1573,7 @@ def send_game_state(api_gateway_client, connection_id):
             "bullets": bullets,
             "scores": current_scores,
             "teams": TEAMS,
-            "collision_boxes": game_state.get("collision_boxes", []),
+            "collision_boxes": collision_boxes,
             "timestamp": int(time.time())
         }
         
