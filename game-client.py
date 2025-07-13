@@ -171,26 +171,12 @@ class MultiplayerGame:
     def get_player_animation(self, player_id, team):
         """Obtém ou cria uma animação para um player específico"""
         if player_id not in self.player_animations:
-            # Seleção determinística de sprite baseada no time
-            # Usa hash do player_id para garantir consistência entre clientes
-            sprite_hash = hash(player_id)
-            
+            # Usa as animações já definidas baseadas no time
             if team == "red":
-                # Time vermelho usa sprites específicas do time vermelho
-                # sprite1.png, sprite2.png, sprite3.png, sprite4.png
-                sprite_number = (sprite_hash % 4) + 1
-                animation = ScalableAnimation(f"assets/sprite{sprite_number}.png", scale=0.7)
-                animation.facing_right = True  # Time vermelho olha para direita por padrão
+                animation = self.animation_red
             else:  # blue
-                # Time azul usa sprites específicas do time azul
-                # sprite5.png, sprite6.png, sprite7.png
-                sprite_number = (sprite_hash % 3) + 5
-                animation = ScalableAnimation(f"assets/sprite{sprite_number}.png", scale=0.7)
-                animation.facing_right = False  # Time azul olha para esquerda por padrão
+                animation = self.animation_blue
             
-            print(f"🎭 Player {player_id} (Time {team}) usando sprite{sprite_number}.png")
-            
-            animation.create_animation(160, 360, 140, 140, "run", repeat=True, duration=150, rows=1, cols=8)
             self.player_animations[player_id] = animation
             self.last_positions[player_id] = {"x": 0, "y": 0}
         
