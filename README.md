@@ -24,8 +24,15 @@ pip install pygame>=2.6.1 websocket-client>=1.8.0 python-dotenv>=1.1.1
 ```
 
 ### 2️⃣ **Configurar AWS**
-1. **DynamoDB**: Criar tabela `WebSocketConnections` 
-   - Partition key: `connection_id` (String)
+1. **DynamoDB**: Criar tabelas
+   - `WebSocketConnections` (Partition key: `connection_id` (String))
+   - `game_bullets` (Partition key: `id` (String))
+   - `game_state` (Partition key: `id` (String))
+   
+   **OU** executar o script automático:
+   ```bash
+   python create_game_state_table.py
+   ```
 
 2. **Lambda**: Criar função `websocket-game-handler`
    - Cole o código `websocket_game_handler.py`
@@ -138,15 +145,26 @@ dependencies = [
 - 🏁 Lógica de bandeiras
 - 🔫 Processamento de tiros
 - 💖 Sistema de HP e dano
-- 🏆 Sistema de pontuação
+- 🏆 Sistema de pontuação persistente
 - 🧹 Limpeza automática
 - 📊 Logs detalhados
+
+## 🔧 Correções Recentes
+
+### ✅ **Problema de Scores Resolvido**
+- **Problema**: Scores zeravam quando o Lambda era reinicializado
+- **Causa**: Estado do jogo era mantido apenas em memória
+- **Solução**: Implementada persistência no DynamoDB
+- **Tabela**: `game_state` para armazenar scores e estado do jogo
+- **Benefício**: Scores agora persistem entre reinicializações do servidor
 
 ---
 
 ## 🔧 Configurações Importantes
 
 ### **DynamoDB Schema**
+
+#### **WebSocketConnections**
 ```json
 {
     "connection_id": "String (Partition Key)",
@@ -157,6 +175,34 @@ dependencies = [
     "y": "Number",
     "connected_at": "Number",
     "last_activity": "Number",
+    "expires_at": "Number (TTL)"
+}
+```
+
+#### **game_state**
+```json
+{
+    "id": "String (Partition Key) - sempre 'current_game'",
+    "flags": "Map - estado das bandeiras",
+    "bullets": "List - balas ativas",
+    "scores": "Map - pontuação dos times",
+    "game_started": "Boolean",
+    "last_updated": "Number",
+    "expires_at": "Number (TTL)"
+}
+```
+
+#### **game_bullets**
+```json
+{
+    "id": "String (Partition Key)",
+    "shooter_id": "String",
+    "shooter_team": "String",
+    "x": "Number",
+    "y": "Number",
+    "dx": "Number",
+    "dy": "Number",
+    "created_at": "Number",
     "expires_at": "Number (TTL)"
 }
 ```

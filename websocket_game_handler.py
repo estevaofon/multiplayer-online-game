@@ -30,6 +30,9 @@ connections_table = dynamodb.Table(TABLE_NAME)
 # DynamoDB table para balas
 bullets_table = dynamodb.Table("game_bullets")
 
+# DynamoDB table para estado do jogo
+game_state_table = dynamodb.Table("game_state")
+
 
 def get_api_gateway_client(domain_name, stage):
     """Cria cliente para enviar mensagens WebSocket"""
@@ -121,7 +124,156 @@ TEAMS = {
     }
 }
 
-# Estado global do jogo
+def load_game_state():
+    """Carrega o estado do jogo do DynamoDB"""
+    try:
+        print("🔄 Carregando estado do jogo do DynamoDB...")
+        print("🔍 ID da tabela: current_game")
+        print("🔍 Nome da tabela: game_state")
+        
+        response = game_state_table.get_item(Key={"id": "current_game"})
+        
+        print(f"🔍 Resposta completa do DynamoDB: {json.dumps(response, default=str)}")
+        print(f"🔍 'Item' presente na resposta: {'Item' in response}")
+        
+        if "Item" in response:
+            item = response["Item"]
+            print(f"✅ Estado do jogo carregado do DynamoDB")
+            print(f"🔍 Item completo: {json.dumps(item, default=str)}")
+            
+            loaded_scores = item.get("scores", {"red": 0, "blue": 0})
+            print(f"🔍 Scores carregados do DynamoDB: {loaded_scores}")
+            print(f"🔍 Tipo dos scores: {type(loaded_scores)}")
+            
+            # Converte scores de Decimal para int
+            converted_scores = {}
+            for team, score in loaded_scores.items():
+                if isinstance(score, Decimal):
+                    converted_scores[team] = int(score)
+                    print(f"🔍 Convertendo {team}: {score} (Decimal) -> {int(score)} (int)")
+                else:
+                    converted_scores[team] = score
+                    print(f"🔍 Mantendo {team}: {score} (tipo: {type(score)})")
+            
+            print(f"🔍 Scores convertidos: {converted_scores}")
+            
+            result = {
+                "flags": item.get("flags", {
+                    "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                    "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+                }),
+                "bullets": item.get("bullets", []),
+                "scores": converted_scores,
+                "game_started": item.get("game_started", False)
+            }
+            
+            print(f"🔍 Estado retornado: {json.dumps(result, default=str)}")
+            return result
+        else:
+            print("📝 NENHUM ESTADO PERSISTIDO ENCONTRADO - USANDO ESTADO PADRÃO")
+            default_scores = {"red": 0, "blue": 0}
+            print(f"🔍 Scores padrão definidos: {default_scores}")
+            
+            result = {
+                "flags": {
+                    "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                    "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+                },
+                "bullets": [],
+                "scores": default_scores,
+                "game_started": False
+            }
+            
+            print(f"🔍 Estado padrão retornado: {json.dumps(result, default=str)}")
+            return result
+    except Exception as e:
+        print(f"❌ Erro ao carregar estado do jogo: {str(e)}")
+        # Retorna estado padrão em caso de erro
+        return {
+            "flags": {
+                "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+            },
+            "bullets": [],
+            "scores": {"red": 0, "blue": 0},
+            "game_started": False
+        }
+
+def save_game_state():
+    """Salva o estado do jogo no DynamoDB"""
+    try:
+        print(f"💾 SALVANDO ESTADO DO JOGO")
+        print(f"🔍 Scores antes de salvar: {game_state['scores']}")
+        print(f"🔍 Tipo dos scores: {type(game_state['scores'])}")
+        print(f"🔍 Conteúdo completo do game_state: {json.dumps(game_state, default=str)}")
+        
+        item_to_save = {
+            "id": "current_game",
+            "flags": game_state["flags"],
+            "bullets": game_state["bullets"],
+            "scores": game_state["scores"],
+            "game_started": game_state["game_started"],
+            "last_updated": int(time.time()),
+            "expires_at": int(time.time()) + 86400  # Expira em 24 horas
+        }
+        
+        print(f"🔍 Item que será salvo: {json.dumps(item_to_save, default=str)}")
+        
+        game_state_table.put_item(Item=item_to_save)
+        print("✅ Estado do jogo salvo com sucesso")
+        
+        # Verifica se foi salvo corretamente
+        print("🔍 Verificando se foi salvo corretamente...")
+        verify_response = game_state_table.get_item(Key={"id": "current_game"})
+        if "Item" in verify_response:
+            saved_scores = verify_response["Item"].get("scores", {})
+            print(f"🔍 Scores salvos no DynamoDB: {saved_scores}")
+            print(f"🔍 Scores originais: {game_state['scores']}")
+            
+            if saved_scores == game_state['scores']:
+                print("✅ Scores salvos corretamente!")
+            else:
+                print("❌ ERRO: Scores não foram salvos corretamente!")
+                print(f"   Esperado: {game_state['scores']}")
+                print(f"   Salvo: {saved_scores}")
+        else:
+            print("❌ ERRO: Item não encontrado após salvar!")
+            
+    except Exception as e:
+        print(f"❌ Erro ao salvar estado do jogo: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def reset_game_state():
+    """Reseta o estado do jogo para valores padrão"""
+    try:
+        print("🔄 RESETANDO ESTADO DO JOGO")
+        
+        # Reseta o estado global
+        global game_state
+        game_state = {
+            "flags": {
+                "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+            },
+            "bullets": [],
+            "scores": {"red": 0, "blue": 0},
+            "game_started": False
+        }
+        
+        print(f"🔍 Estado resetado: scores={game_state['scores']}")
+        
+        # Salva no DynamoDB
+        save_game_state()
+        
+        print("✅ Estado do jogo resetado e salvo no DynamoDB")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao resetar estado do jogo: {str(e)}")
+        return False
+
+# Estado global do jogo (será recarregado a cada invocação)
 game_state = {
     "flags": {
         "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
@@ -132,11 +284,18 @@ game_state = {
     "game_started": False
 }
 
+
 def lambda_handler(event, context):
     """
     Função principal para processar eventos WebSocket
     """
     try:
+        # Carrega o estado do jogo do DynamoDB a cada invocação
+        global game_state
+        print("🚀 CARREGANDO ESTADO DO JOGO DO DYNAMODB")
+        game_state = load_game_state()
+        print(f"🎮 Estado do jogo carregado: scores={game_state['scores']}")
+        
         print(f"🚀 Servidor versão: {SERVER_VERSION}")
         print(f"📨 Evento recebido: {json.dumps(event, default=str)}")
 
@@ -274,6 +433,8 @@ def handle_message(connection_id: str, message: Dict[str, Any], api_gateway_clie
             return handle_ping(connection_id, api_gateway_client)
         elif action == "bullet_update":
             return handle_bullet_update(connection_id, message, api_gateway_client)
+        elif action == "reset_game":
+            return handle_reset_game(connection_id, api_gateway_client)
 
         else:
             print(f"❌ Ação desconhecida: {action}")
@@ -542,6 +703,9 @@ def handle_capture_flag(connection_id: str, message: Dict[str, Any], api_gateway
         flag["captured"] = True
         flag["carrier"] = player_id
 
+        # Salva o estado do jogo no DynamoDB
+        save_game_state()
+
         # Broadcast da captura
         broadcast_message(api_gateway_client, {
             "type": "flag_captured",
@@ -579,6 +743,9 @@ def handle_drop_flag(connection_id: str, message: Dict[str, Any], api_gateway_cl
                 flag["carrier"] = None
                 flag["x"] = x
                 flag["y"] = y
+
+                # Salva o estado do jogo no DynamoDB
+                save_game_state()
 
                 # Broadcast da soltura
                 broadcast_message(api_gateway_client, {
@@ -669,6 +836,32 @@ def handle_ping(connection_id: str, api_gateway_client):
     except Exception as e:
         print(f"❌ Erro no ping: {str(e)}")
         return {"statusCode": 500, "body": f"Erro no ping: {str(e)}"}
+
+def handle_reset_game(connection_id: str, api_gateway_client):
+    """
+    Reseta o estado do jogo
+    """
+    try:
+        print("🔄 RESETANDO JOGO SOLICITADO")
+        
+        # Reseta o estado
+        if reset_game_state():
+            # Notifica todos os jogadores
+            broadcast_message(api_gateway_client, {
+                "type": "game_reset",
+                "scores": {"red": 0, "blue": 0},
+                "timestamp": int(time.time())
+            })
+            
+            print("✅ Jogo resetado com sucesso")
+            return {"statusCode": 200, "body": "Jogo resetado"}
+        else:
+            print("❌ Falha ao resetar jogo")
+            return {"statusCode": 500, "body": "Falha ao resetar jogo"}
+
+    except Exception as e:
+        print(f"❌ Erro ao resetar jogo: {str(e)}")
+        return {"statusCode": 500, "body": f"Erro ao resetar jogo: {str(e)}"}
 
 
 def handle_bullet_update(connection_id: str, message: Dict[str, Any], api_gateway_client):
@@ -1104,13 +1297,22 @@ def check_flag_scoring(api_gateway_client):
                 print(f"🏆 PONTO! {carrier_team} marcou ponto com bandeira {flag_team}!")
                 
                 # Ponto para o time do portador
+                old_score = game_state["scores"].get(carrier_team, 0)
                 game_state["scores"][carrier_team] += 1
+                new_score = game_state["scores"][carrier_team]
+                
+                print(f"🔍 Score do time {carrier_team}: {old_score} -> {new_score}")
+                print(f"🔍 Scores APÓS o ponto: {game_state['scores']}")
 
                 # Reseta a bandeira
                 flag["captured"] = False
                 flag["carrier"] = None
                 flag["x"] = TEAMS[flag_team]["flag_x"]
                 flag["y"] = TEAMS[flag_team]["flag_y"]
+
+                # Salva o estado do jogo no DynamoDB
+                print(f"🔍 Chamando save_game_state() com scores: {game_state['scores']}")
+                save_game_state()
 
                 # Broadcast do ponto
                 broadcast_message(api_gateway_client, {
@@ -1120,6 +1322,8 @@ def check_flag_scoring(api_gateway_client):
                     "scores": game_state["scores"],
                     "timestamp": current_time
                 })
+                
+                print(f"🔍 Broadcast enviado com scores: {game_state['scores']}")
             else:
                 print(f"   Ainda não chegou na base (precisa < {BASE_SIZE // 2})")
 
@@ -1144,15 +1348,27 @@ def send_game_state(api_gateway_client, connection_id):
         bullets = get_all_bullets_dynamo()
         
         # Monta o game_state_message
+        print("🔍 VERIFICANDO SCORES ANTES DE ENVIAR")
+        print(f"🔍 game_state['scores'] original: {game_state['scores']}")
+        print(f"🔍 Tipo do game_state['scores']: {type(game_state['scores'])}")
+        
+        current_scores = game_state["scores"]
+        print(f"🎯 Scores que serão enviados no game_state: {current_scores}")
+        print(f"🔍 Tipo dos scores: {type(current_scores)}")
+        print(f"🔍 Conteúdo dos scores: {current_scores}")
+        
         game_state_message = {
             "type": "game_state",
             "players": active_players,
             "flags": game_state["flags"],
             "bullets": bullets,
-            "scores": game_state["scores"],
+            "scores": current_scores,
             "teams": TEAMS,
             "timestamp": int(time.time())
         }
+        
+        print(f"🔍 Scores na mensagem final: {game_state_message['scores']}")
+        print(f"🔍 Tipo dos scores na mensagem: {type(game_state_message['scores'])}")
         
         # Converte recursivamente todos os valores Decimal
         print(f"🔧 Convertendo valores Decimal...")
