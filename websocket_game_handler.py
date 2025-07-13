@@ -100,6 +100,11 @@ BULLET_DAMAGE = 25
 PLAYER_MAX_HP = 100
 RESPAWN_TIME = 5  # segundos
 
+# Configurações das caixas de colisão
+BOX_SIZE = 40  # Tamanho das caixas quadradas
+NUM_BOXES = 8  # Número de caixas a serem geradas
+BOX_MIN_DISTANCE = 80  # Distância mínima entre caixas e outros objetos
+
 # Times
 TEAMS = {
     "red": {
@@ -123,6 +128,69 @@ TEAMS = {
         "spawn_y": GAME_HEIGHT // 2
     }
 }
+
+def generate_collision_boxes():
+    """Gera caixas de colisão aleatórias no mapa"""
+    import random
+    
+    boxes = []
+    attempts = 0
+    max_attempts = 1000
+    
+    # Posições que devem ser evitadas (bases, bandeiras, spawns)
+    forbidden_areas = [
+        # Base vermelha
+        {"x": TEAMS["red"]["base_x"], "y": TEAMS["red"]["base_y"], "radius": BASE_SIZE // 2 + BOX_MIN_DISTANCE},
+        # Base azul
+        {"x": TEAMS["blue"]["base_x"], "y": TEAMS["blue"]["base_y"], "radius": BASE_SIZE // 2 + BOX_MIN_DISTANCE},
+        # Bandeira vermelha
+        {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "radius": FLAG_SIZE // 2 + BOX_MIN_DISTANCE},
+        # Bandeira azul
+        {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "radius": FLAG_SIZE // 2 + BOX_MIN_DISTANCE},
+        # Spawn vermelho
+        {"x": TEAMS["red"]["spawn_x"], "y": TEAMS["red"]["spawn_y"], "radius": 50 + BOX_MIN_DISTANCE},
+        # Spawn azul
+        {"x": TEAMS["blue"]["spawn_x"], "y": TEAMS["blue"]["spawn_y"], "radius": 50 + BOX_MIN_DISTANCE}
+    ]
+    
+    while len(boxes) < NUM_BOXES and attempts < max_attempts:
+        attempts += 1
+        
+        # Gera posição aleatória
+        x = random.randint(BOX_SIZE // 2, GAME_WIDTH - BOX_SIZE // 2)
+        y = random.randint(BOX_SIZE // 2, GAME_HEIGHT - BOX_SIZE // 2)
+        
+        # Verifica se está longe das áreas proibidas
+        valid_position = True
+        for area in forbidden_areas:
+            dx = x - area["x"]
+            dy = y - area["y"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            if distance < area["radius"]:
+                valid_position = False
+                break
+        
+        # Verifica se está longe de outras caixas já colocadas
+        for box in boxes:
+            dx = x - box["x"]
+            dy = y - box["y"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            if distance < BOX_MIN_DISTANCE:
+                valid_position = False
+                break
+        
+        if valid_position:
+            boxes.append({
+                "id": f"box_{len(boxes)}",
+                "x": x,
+                "y": y,
+                "size": BOX_SIZE
+            })
+            print(f"📦 Caixa de colisão gerada em ({x}, {y})")
+    
+    print(f"✅ Geradas {len(boxes)} caixas de colisão")
+    return boxes
+
 
 def load_game_state():
     """Carrega o estado do jogo do DynamoDB"""
@@ -157,6 +225,11 @@ def load_game_state():
             
             print(f"🔍 Scores convertidos: {converted_scores}")
             
+            # Carrega caixas de colisão ou gera novas se não existirem
+            collision_boxes = item.get("collision_boxes", [])
+            if not collision_boxes:
+                collision_boxes = generate_collision_boxes()
+            
             result = {
                 "flags": item.get("flags", {
                     "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
@@ -164,7 +237,8 @@ def load_game_state():
                 }),
                 "bullets": item.get("bullets", []),
                 "scores": converted_scores,
-                "game_started": item.get("game_started", False)
+                "game_started": item.get("game_started", False),
+                "collision_boxes": collision_boxes
             }
             
             print(f"🔍 Estado retornado: {json.dumps(result, default=str)}")
@@ -174,6 +248,9 @@ def load_game_state():
             default_scores = {"red": 0, "blue": 0}
             print(f"🔍 Scores padrão definidos: {default_scores}")
             
+            # Gera caixas de colisão para novo jogo
+            collision_boxes = generate_collision_boxes()
+            
             result = {
                 "flags": {
                     "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
@@ -181,7 +258,8 @@ def load_game_state():
                 },
                 "bullets": [],
                 "scores": default_scores,
-                "game_started": False
+                "game_started": False,
+                "collision_boxes": collision_boxes
             }
             
             print(f"🔍 Estado padrão retornado: {json.dumps(result, default=str)}")
@@ -189,6 +267,7 @@ def load_game_state():
     except Exception as e:
         print(f"❌ Erro ao carregar estado do jogo: {str(e)}")
         # Retorna estado padrão em caso de erro
+        collision_boxes = generate_collision_boxes()
         return {
             "flags": {
                 "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
@@ -196,7 +275,8 @@ def load_game_state():
             },
             "bullets": [],
             "scores": {"red": 0, "blue": 0},
-            "game_started": False
+            "game_started": False,
+            "collision_boxes": collision_boxes
         }
 
 def save_game_state():
@@ -213,6 +293,7 @@ def save_game_state():
             "bullets": game_state["bullets"],
             "scores": game_state["scores"],
             "game_started": game_state["game_started"],
+            "collision_boxes": game_state.get("collision_boxes", []),
             "last_updated": int(time.time()),
             "expires_at": int(time.time()) + 86400  # Expira em 24 horas
         }
@@ -258,7 +339,8 @@ def reset_game_state():
             },
             "bullets": [],
             "scores": {"red": 0, "blue": 0},
-            "game_started": False
+            "game_started": False,
+            "collision_boxes": generate_collision_boxes()
         }
         
         print(f"🔍 Estado resetado: scores={game_state['scores']}")
@@ -281,7 +363,8 @@ game_state = {
     },
     "bullets": [],
     "scores": {"red": 0, "blue": 0},
-    "game_started": False
+    "game_started": False,
+    "collision_boxes": []
 }
 
 
@@ -994,6 +1077,33 @@ def check_bullet_collisions_immediate(api_gateway_client, bullet_id: str, bullet
             print("   👥 Nenhum jogador ativo para verificar")
             return False
 
+        # Verifica colisão com caixas de colisão
+        collision_boxes = game_state.get("collision_boxes", [])
+        for box in collision_boxes:
+            box_x = box["x"]
+            box_y = box["y"]
+            box_size = box["size"]
+            
+            # Verifica se a bala está dentro da caixa
+            if (bullet_x >= box_x - box_size // 2 and 
+                bullet_x <= box_x + box_size // 2 and
+                bullet_y >= box_y - box_size // 2 and 
+                bullet_y <= box_y + box_size // 2):
+                
+                print(f"📦 COLISÃO COM CAIXA! Bala {bullet_id} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                
+                # Remove a bala
+                delete_bullet_dynamo(bullet_id)
+                
+                # Broadcast da remoção da bala
+                broadcast_message(api_gateway_client, {
+                    "type": "bullet_removed",
+                    "bullet_id": bullet_id,
+                    "timestamp": current_time
+                })
+                
+                return True  # Colisão detectada e processada
+
         # Busca a bala específica no DynamoDB
         try:
             response = bullets_table.get_item(Key={"id": bullet_id})
@@ -1132,6 +1242,33 @@ def check_bullet_collisions_periodic(api_gateway_client):
                 bullet_y = float(bullet_y)
 
             print(f"   🎯 Verificando bala {bullet['id']} ({bullet_x:.1f}, {bullet_y:.1f}) - Time: {bullet['shooter_team']}")
+
+            # Verifica colisão com caixas de colisão
+            collision_boxes = game_state.get("collision_boxes", [])
+            for box in collision_boxes:
+                box_x = box["x"]
+                box_y = box["y"]
+                box_size = box["size"]
+                
+                # Verifica se a bala está dentro da caixa
+                if (bullet_x >= box_x - box_size // 2 and 
+                    bullet_x <= box_x + box_size // 2 and
+                    bullet_y >= box_y - box_size // 2 and 
+                    bullet_y <= box_y + box_size // 2):
+                    
+                    print(f"   📦 COLISÃO COM CAIXA! Bala {bullet['id']} atingiu caixa {box['id']} em ({box_x}, {box_y})")
+                    
+                    # Remove a bala
+                    bullets_to_remove.append(bullet)
+                    
+                    # Broadcast da remoção da bala
+                    broadcast_message(api_gateway_client, {
+                        "type": "bullet_removed",
+                        "bullet_id": bullet["id"],
+                        "timestamp": current_time
+                    })
+                    
+                    break  # Bala já atingiu uma caixa, não precisa verificar outras
 
             # Verifica colisão com jogadores
             for player_id, player_data in active_players.items():
@@ -1364,6 +1501,7 @@ def send_game_state(api_gateway_client, connection_id):
             "bullets": bullets,
             "scores": current_scores,
             "teams": TEAMS,
+            "collision_boxes": game_state.get("collision_boxes", []),
             "timestamp": int(time.time())
         }
         

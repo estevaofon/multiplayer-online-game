@@ -27,6 +27,7 @@ FPS = 60
 BULLET_SIZE = 5
 FLAG_SIZE = 30
 BASE_SIZE = 100
+BOX_SIZE = 40  # Tamanho das caixas de colisão
 
 # 🔧 SUBSTITUA PELA SUA URL WEBSOCKET DA AWS
 WEBSOCKET_URL = os.getenv("WEBSOCKET_URL")
@@ -85,6 +86,7 @@ class MultiplayerGame:
         }
         self.bullets = []
         self.scores = {"red": 0, "blue": 0}
+        self.collision_boxes = []  # Caixas de colisão
 
         # WebSocket
         self.ws = None
@@ -142,6 +144,13 @@ class MultiplayerGame:
                 print(f"   players count: {len(players)}")
                 for pid, player_data in players.items():
                     print(f"   player {pid} keys: {list(player_data.keys())}")
+                
+                # Atualiza estado do jogo
+                self.flags = data.get("flags", self.flags)
+                self.bullets = data.get("bullets", [])
+                self.scores = data.get("scores", self.scores)
+                self.collision_boxes = data.get("collision_boxes", [])
+                print(f"📦 Caixas de colisão recebidas: {len(self.collision_boxes)}")
 
             if msg_type == "player_joined":
                 if "player_data" in data:
@@ -737,6 +746,20 @@ class MultiplayerGame:
                 pygame.draw.rect(self.screen, flag_color, (flag["x"] - FLAG_SIZE//2, flag["y"] - FLAG_SIZE//2, FLAG_SIZE, FLAG_SIZE))
                 pygame.draw.rect(self.screen, (255, 255, 255), (flag["x"] - FLAG_SIZE//2, flag["y"] - FLAG_SIZE//2, FLAG_SIZE, FLAG_SIZE), 2)
 
+        # Desenha caixas de colisão
+        for box in self.collision_boxes:
+            try:
+                x = int(box.get("x", 0))
+                y = int(box.get("y", 0))
+                size = int(box.get("size", BOX_SIZE))
+                
+                # Desenha a caixa com cor marrom
+                pygame.draw.rect(self.screen, (139, 69, 19), (x - size // 2, y - size // 2, size, size))
+                # Borda da caixa
+                pygame.draw.rect(self.screen, (101, 67, 33), (x - size // 2, y - size // 2, size, size), 2)
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao desenhar caixa {box.get('id')}: {e}")
+
         # Desenha projéteis
         bullet_count = len(self.bullets)
         if bullet_count > 0:
@@ -868,7 +891,10 @@ class MultiplayerGame:
             "E - Capturar bandeira",
             "Q - Soltar bandeira",
             "R - Respawnar (quando morto)",
-            "ESC - Sair"
+            "ESC - Sair",
+            "",
+            "📦 Caixas marrons:",
+            "Barreiras defensivas"
         ]
         
         for i, control in enumerate(controls):
