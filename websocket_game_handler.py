@@ -145,13 +145,25 @@ def load_game_state():
             print(f"🔍 Scores carregados do DynamoDB: {loaded_scores}")
             print(f"🔍 Tipo dos scores: {type(loaded_scores)}")
             
+            # Converte scores de Decimal para int
+            converted_scores = {}
+            for team, score in loaded_scores.items():
+                if isinstance(score, Decimal):
+                    converted_scores[team] = int(score)
+                    print(f"🔍 Convertendo {team}: {score} (Decimal) -> {int(score)} (int)")
+                else:
+                    converted_scores[team] = score
+                    print(f"🔍 Mantendo {team}: {score} (tipo: {type(score)})")
+            
+            print(f"🔍 Scores convertidos: {converted_scores}")
+            
             result = {
                 "flags": item.get("flags", {
                     "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
                     "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
                 }),
                 "bullets": item.get("bullets", []),
-                "scores": loaded_scores,
+                "scores": converted_scores,
                 "game_started": item.get("game_started", False)
             }
             
@@ -190,21 +202,47 @@ def load_game_state():
 def save_game_state():
     """Salva o estado do jogo no DynamoDB"""
     try:
-        print(f"💾 Salvando estado do jogo: scores={game_state['scores']}")
-        game_state_table.put_item(
-            Item={
-                "id": "current_game",
-                "flags": game_state["flags"],
-                "bullets": game_state["bullets"],
-                "scores": game_state["scores"],
-                "game_started": game_state["game_started"],
-                "last_updated": int(time.time()),
-                "expires_at": int(time.time()) + 86400  # Expira em 24 horas
-            }
-        )
+        print(f"💾 SALVANDO ESTADO DO JOGO")
+        print(f"🔍 Scores antes de salvar: {game_state['scores']}")
+        print(f"🔍 Tipo dos scores: {type(game_state['scores'])}")
+        print(f"🔍 Conteúdo completo do game_state: {json.dumps(game_state, default=str)}")
+        
+        item_to_save = {
+            "id": "current_game",
+            "flags": game_state["flags"],
+            "bullets": game_state["bullets"],
+            "scores": game_state["scores"],
+            "game_started": game_state["game_started"],
+            "last_updated": int(time.time()),
+            "expires_at": int(time.time()) + 86400  # Expira em 24 horas
+        }
+        
+        print(f"🔍 Item que será salvo: {json.dumps(item_to_save, default=str)}")
+        
+        game_state_table.put_item(Item=item_to_save)
         print("✅ Estado do jogo salvo com sucesso")
+        
+        # Verifica se foi salvo corretamente
+        print("🔍 Verificando se foi salvo corretamente...")
+        verify_response = game_state_table.get_item(Key={"id": "current_game"})
+        if "Item" in verify_response:
+            saved_scores = verify_response["Item"].get("scores", {})
+            print(f"🔍 Scores salvos no DynamoDB: {saved_scores}")
+            print(f"🔍 Scores originais: {game_state['scores']}")
+            
+            if saved_scores == game_state['scores']:
+                print("✅ Scores salvos corretamente!")
+            else:
+                print("❌ ERRO: Scores não foram salvos corretamente!")
+                print(f"   Esperado: {game_state['scores']}")
+                print(f"   Salvo: {saved_scores}")
+        else:
+            print("❌ ERRO: Item não encontrado após salvar!")
+            
     except Exception as e:
         print(f"❌ Erro ao salvar estado do jogo: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 def reset_game_state():
     """Reseta o estado do jogo para valores padrão"""
@@ -1249,8 +1287,44 @@ def check_flag_scoring(api_gateway_client):
             if distance < BASE_SIZE // 2:
                 print(f"🏆 PONTO! {carrier_team} marcou ponto com bandeira {flag_team}!")
                 
+                # CONSULTA O DYNAMODB ANTES DE ATUALIZAR O SCORE
+                print(f"🔍 CONSULTANDO DYNAMODB ANTES DE ATUALIZAR SCORE...")
+                try:
+                    response = game_state_table.get_item(Key={"id": "current_game"})
+                    if "Item" in response:
+                        current_scores = response["Item"].get("scores", {"red": 0, "blue": 0})
+                        # Converte de Decimal para int
+                        dynamo_scores = {}
+                        for team, score in current_scores.items():
+                            if isinstance(score, Decimal):
+                                dynamo_scores[team] = int(score)
+                            else:
+                                dynamo_scores[team] = score
+                        
+                        print(f"🔍 Scores atuais no DynamoDB: {dynamo_scores}")
+                        print(f"🔍 Scores no game_state local: {game_state['scores']}")
+                        
+                        # Usa os scores do DynamoDB como fonte da verdade
+                        game_state["scores"] = dynamo_scores.copy()
+                        print(f"🔍 Game state atualizado com scores do DynamoDB: {game_state['scores']}")
+                    else:
+                        print(f"⚠️ Nenhum item encontrado no DynamoDB, usando scores locais")
+                except Exception as e:
+                    print(f"❌ Erro ao consultar DynamoDB: {e}")
+                    print(f"⚠️ Usando scores locais como fallback")
+                
+                # Log dos scores antes do ponto
+                print(f"🔍 Scores ANTES do ponto: {game_state['scores']}")
+                print(f"🔍 Time que marcou: {carrier_team}")
+                print(f"🔍 Score atual do time {carrier_team}: {game_state['scores'].get(carrier_team, 0)}")
+                
                 # Ponto para o time do portador
+                old_score = game_state["scores"].get(carrier_team, 0)
                 game_state["scores"][carrier_team] += 1
+                new_score = game_state["scores"][carrier_team]
+                
+                print(f"🔍 Score do time {carrier_team}: {old_score} -> {new_score}")
+                print(f"🔍 Scores APÓS o ponto: {game_state['scores']}")
 
                 # Reseta a bandeira
                 flag["captured"] = False
@@ -1259,6 +1333,7 @@ def check_flag_scoring(api_gateway_client):
                 flag["y"] = TEAMS[flag_team]["flag_y"]
 
                 # Salva o estado do jogo no DynamoDB
+                print(f"🔍 Chamando save_game_state() com scores: {game_state['scores']}")
                 save_game_state()
 
                 # Broadcast do ponto
@@ -1269,6 +1344,8 @@ def check_flag_scoring(api_gateway_client):
                     "scores": game_state["scores"],
                     "timestamp": current_time
                 })
+                
+                print(f"🔍 Broadcast enviado com scores: {game_state['scores']}")
             else:
                 print(f"   Ainda não chegou na base (precisa < {BASE_SIZE // 2})")
 
