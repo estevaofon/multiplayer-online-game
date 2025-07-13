@@ -153,6 +153,7 @@ class MultiplayerGame:
         # Controle de movimento para animações
         self.player_animations = {}  # Dicionário para armazenar animações de cada player
         self.last_positions = {}  # Últimas posições para detectar movimento
+        self.last_directions = {}  # Última direção de movimento de cada player
         self.movement_threshold = 2  # Distância mínima para considerar movimento
 
     def convert_color(self, color):
@@ -173,8 +174,10 @@ class MultiplayerGame:
             # Cria nova animação baseada no time
             if team == "red":
                 animation = ScalableAnimation("assets/sprite4.png", scale=0.7)
+                animation.facing_right = True  # Time vermelho olha para direita por padrão
             else:  # blue
                 animation = ScalableAnimation("assets/sprite5.png", scale=0.7)
+                animation.facing_right = False  # Time azul olha para esquerda por padrão
             
             animation.create_animation(160, 360, 140, 140, "run", repeat=True, duration=150, rows=1, cols=8)
             self.player_animations[player_id] = animation
@@ -186,6 +189,7 @@ class MultiplayerGame:
         """Atualiza a animação de um player baseado em seu movimento"""
         if player_id not in self.last_positions:
             self.last_positions[player_id] = {"x": x, "y": y}
+            self.last_directions[player_id] = 0
             return
         
         last_pos = self.last_positions[player_id]
@@ -195,6 +199,25 @@ class MultiplayerGame:
         if distance > self.movement_threshold:
             animation = self.get_player_animation(player_id, team)
             animation.run("run")
+            
+            # Detecta direção do movimento para ajustar facing_right
+            dx = x - last_pos["x"]
+            if dx > 0:
+                # Movendo para a direita
+                animation.facing_right = True
+                self.last_directions[player_id] = 1
+            elif dx < 0:
+                # Movendo para a esquerda
+                animation.facing_right = False
+                self.last_directions[player_id] = -1
+        else:
+            # Se não está se movendo, mantém a última direção
+            if player_id in self.last_directions:
+                animation = self.get_player_animation(player_id, team)
+                if self.last_directions[player_id] > 0:
+                    animation.facing_right = True
+                elif self.last_directions[player_id] < 0:
+                    animation.facing_right = False
         
         # Atualiza a última posição
         self.last_positions[player_id] = {"x": x, "y": y}
@@ -205,6 +228,8 @@ class MultiplayerGame:
             del self.player_animations[player_id]
         if player_id in self.last_positions:
             del self.last_positions[player_id]
+        if player_id in self.last_directions:
+            del self.last_directions[player_id]
 
     def update_all_animations(self):
         """Atualiza todas as animações dos players"""
