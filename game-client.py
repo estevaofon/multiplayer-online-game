@@ -262,8 +262,14 @@ class MultiplayerGame:
 
             elif msg_type == "bullet_shot":
                 bullet = data["bullet"]
-                self.bullets.append(bullet)
-                print(f"🔫 {bullet['shooter_id']} atirou!")
+                # Verifica se a bala já existe para evitar duplicatas
+                bullet_exists = any(b.get("id") == bullet["id"] for b in self.bullets)
+                if not bullet_exists:
+                    self.bullets.append(bullet)
+                    print(f"🔫 {bullet['shooter_id']} atirou! Bala {bullet['id']} adicionada")
+                    print(f"   📊 Total de balas: {len(self.bullets)}")
+                else:
+                    print(f"⚠️ Bala {bullet['id']} já existe, ignorando duplicata")
 
             elif msg_type == "bullets_update":
                 self.bullets = data["bullets"]
@@ -348,7 +354,12 @@ class MultiplayerGame:
 
                 # Atualiza estado do jogo
                 self.flags = data.get("flags", self.flags)
-                self.bullets = data.get("bullets", [])
+                new_bullets = data.get("bullets", [])
+                old_count = len(self.bullets)
+                self.bullets = new_bullets
+                new_count = len(self.bullets)
+                if new_count != old_count:
+                    print(f"📊 Estado do jogo: balas {old_count} -> {new_count}")
                 self.scores = data.get("scores", {"red": 0, "blue": 0})
 
             elif msg_type == "error":
@@ -450,6 +461,9 @@ class MultiplayerGame:
     def send_shot(self, target_x, target_y):
         """Envia tiro"""
         print(f"🔫 send_shot() chamada - target=({target_x}, {target_y})")
+        print(f"   🖱️ Mouse position: {pygame.mouse.get_pos()}")
+        print(f"   🎮 Player position: ({self.local_player['x']}, {self.local_player['y']})")
+        print(f"   🔌 Connected: {self.connected}, Dead: {self.dead}")
         
         if not self.connected or not self.ws or self.dead:
             print(f"   ❌ Não conectado ou morto - connected={self.connected}, dead={self.dead}")
@@ -544,8 +558,18 @@ class MultiplayerGame:
             return
 
         # Debug: mostra que a função está sendo chamada
+        current_time = time.time()
         if self.bullets:
             print(f"🔄 update_bullets() chamada - {len(self.bullets)} balas ativas - Player ID: {self.player_id}")
+            # Debug detalhado das balas
+            for i, bullet in enumerate(self.bullets):
+                bullet_age = current_time - bullet.get("created_at", 0)
+                print(f"   Bala {i+1}: {bullet.get('id')} - idade: {bullet_age:.1f}s - pos: ({bullet.get('x', 0):.1f}, {bullet.get('y', 0):.1f})")
+        else:
+            # Debug adicional - verifica se não há balas
+            if current_time - getattr(self, 'last_bullet_debug_time', 0) > 5:  # A cada 5 segundos
+                print(f"🔍 Debug: Nenhuma bala ativa - Player ID: {self.player_id} - Connected: {self.connected}")
+                self.last_bullet_debug_time = current_time
 
         current_time = time.time()
         bullets_to_remove = []
@@ -555,10 +579,13 @@ class MultiplayerGame:
             print(f"🔍 Processando {len(self.bullets)} balas...")
 
         for bullet in self.bullets:
-            # Remove balas antigas (mais de 5 segundos)
-            if current_time - bullet.get("created_at", 0) > 5:
-                bullets_to_remove.append(bullet)
-                continue
+            # REMOVIDO: Filtro de idade das balas - todas as balas são processadas independente da idade
+            bullet_created = bullet.get("created_at", 0)
+            bullet_age = current_time - bullet_created
+            
+            # Apenas log informativo, sem remoção
+            if bullet_age > 15:
+                print(f"   ⏰ Bala {bullet.get('id')} envelhecendo - idade: {bullet_age:.1f}s")
 
             # Move a bala
             bullet["x"] += bullet["dx"]
@@ -657,11 +684,15 @@ class MultiplayerGame:
         self.local_player["x"] = new_x
         self.local_player["y"] = new_y
 
-        # Tiro com clique do mouse
+        # Tiro com clique do mouse - Versão melhorada
         mouse_buttons = pygame.mouse.get_pressed()
         if mouse_buttons[0]:  # Botão esquerdo
             mouse_x, mouse_y = pygame.mouse.get_pos()
-            self.send_shot(mouse_x, mouse_y)
+            # Verifica se as coordenadas são válidas
+            if 0 <= mouse_x <= SCREEN_WIDTH and 0 <= mouse_y <= SCREEN_HEIGHT:
+                self.send_shot(mouse_x, mouse_y)
+            else:
+                print(f"⚠️ Coordenadas do mouse inválidas: ({mouse_x}, {mouse_y})")
 
         # Captura de bandeira com E
         if keys[pygame.K_e]:
@@ -707,8 +738,23 @@ class MultiplayerGame:
                 pygame.draw.rect(self.screen, (255, 255, 255), (flag["x"] - FLAG_SIZE//2, flag["y"] - FLAG_SIZE//2, FLAG_SIZE, FLAG_SIZE), 2)
 
         # Desenha projéteis
+        bullet_count = len(self.bullets)
+        if bullet_count > 0:
+            # Debug visual das balas
+            if hasattr(self, 'last_bullet_draw_debug'):
+                if time.time() - self.last_bullet_draw_debug > 2:  # A cada 2 segundos
+                    print(f"🎨 Desenhando {bullet_count} balas na tela")
+                    self.last_bullet_draw_debug = time.time()
+            else:
+                self.last_bullet_draw_debug = time.time()
+        
         for bullet in self.bullets:
-            pygame.draw.circle(self.screen, (255, 255, 0), (int(bullet["x"]), int(bullet["y"])), BULLET_SIZE)
+            try:
+                x = int(bullet.get("x", 0))
+                y = int(bullet.get("y", 0))
+                pygame.draw.circle(self.screen, (255, 255, 0), (x, y), BULLET_SIZE)
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao desenhar bala {bullet.get('id')}: {e}")
 
         # Desenha outros jogadores
         for player_id, player_data in self.other_players.items():
@@ -871,6 +917,12 @@ class MultiplayerGame:
                         self.running = False
                     elif event.key == pygame.K_r and not self.connected:
                         self.try_reconnect()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    # Debug adicional para eventos do mouse
+                    if event.button == 1:  # Botão esquerdo
+                        print(f"🖱️ Mouse click detected: {event.pos} - Button: {event.button}")
+                        if not self.dead and self.connected:
+                            self.send_shot(event.pos[0], event.pos[1])
 
             # Atualiza timer de respawn
             if self.dead and self.respawn_timer > 0:
@@ -898,7 +950,17 @@ class MultiplayerGame:
 
             # Atualiza display
             pygame.display.flip()
-            self.clock.tick(FPS)
+            current_fps = self.clock.tick(FPS)
+            
+            # Debug de performance
+            if hasattr(self, 'last_performance_check'):
+                if time.time() - self.last_performance_check > 10:  # A cada 10 segundos
+                    print(f"📊 Performance: FPS atual: {current_fps:.1f}, Target: {FPS}")
+                    print(f"   🎮 Jogadores: {len(self.other_players) + 1}")
+                    print(f"   🔫 Balas ativas: {len(self.bullets)}")
+                    self.last_performance_check = time.time()
+            else:
+                self.last_performance_check = time.time()
 
         # Limpeza
         self.disconnect()
