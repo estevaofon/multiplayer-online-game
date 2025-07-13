@@ -87,6 +87,7 @@ class MultiplayerGame:
         self.bullets = []
         self.scores = {"red": 0, "blue": 0}
         self.collision_boxes = []  # Caixas de colisão
+        self.collision_effects = []  # Efeitos visuais de colisão
 
         # WebSocket
         self.ws = None
@@ -561,103 +562,121 @@ class MultiplayerGame:
 
 
 
+    def check_bullet_box_collision(self, bullet_x, bullet_y):
+        """Verifica se uma bala colide com alguma caixa"""
+        for box in self.collision_boxes:
+            try:
+                box_x = int(box.get("x", 0))
+                box_y = int(box.get("y", 0))
+                box_size = int(box.get("size", BOX_SIZE))
+                
+                # Verifica se a bala está dentro da caixa
+                if (bullet_x >= box_x - box_size // 2 and 
+                    bullet_x <= box_x + box_size // 2 and
+                    bullet_y >= box_y - box_size // 2 and 
+                    bullet_y <= box_y + box_size // 2):
+                    return True  # Há colisão
+                    
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao verificar colisão de bala com caixa {box.get('id')}: {e}")
+                continue
+                
+        return False  # Não há colisão
+
     def update_bullets(self):
-        """Atualiza posição das balas localmente e envia para o servidor"""
+        """Atualiza posição das balas e verifica colisões"""
         if not self.connected or not self.ws:
             return
 
-        # Debug: mostra que a função está sendo chamada
         current_time = time.time()
-        if self.bullets:
-            print(f"🔄 update_bullets() chamada - {len(self.bullets)} balas ativas - Player ID: {self.player_id}")
-            # Debug detalhado das balas
-            for i, bullet in enumerate(self.bullets):
-                bullet_age = current_time - bullet.get("created_at", 0)
-                print(f"   Bala {i+1}: {bullet.get('id')} - idade: {bullet_age:.1f}s - pos: ({bullet.get('x', 0):.1f}, {bullet.get('y', 0):.1f})")
-        else:
-            # Debug adicional - verifica se não há balas
-            if current_time - getattr(self, 'last_bullet_debug_time', 0) > 5:  # A cada 5 segundos
-                print(f"🔍 Debug: Nenhuma bala ativa - Player ID: {self.player_id} - Connected: {self.connected}")
-                self.last_bullet_debug_time = current_time
+        if current_time - self.last_bullet_update_time < self.bullet_update_interval:
+            return
 
-        current_time = time.time()
         bullets_to_remove = []
-
-        # Debug: mostra quantas balas estão sendo processadas
-        if self.bullets:
-            print(f"🔍 Processando {len(self.bullets)} balas...")
-
+        
         for bullet in self.bullets:
-            # REMOVIDO: Filtro de idade das balas - todas as balas são processadas independente da idade
-            bullet_created = bullet.get("created_at", 0)
-            bullet_age = current_time - bullet_created
-            
-            # Apenas log informativo, sem remoção
-            if bullet_age > 15:
-                print(f"   ⏰ Bala {bullet.get('id')} envelhecendo - idade: {bullet_age:.1f}s")
-
-            # Move a bala
-            bullet["x"] += bullet["dx"]
-            bullet["y"] += bullet["dy"]
-
-            # Verifica se saiu da tela
-            if (bullet["x"] < 0 or bullet["x"] > SCREEN_WIDTH or 
-                bullet["y"] < 0 or bullet["y"] > SCREEN_HEIGHT):
+            try:
+                # Converte valores para float
+                x = float(bullet.get("x", 0))
+                y = float(bullet.get("y", 0))
+                dx = float(bullet.get("dx", 0))
+                dy = float(bullet.get("dy", 0))
+                speed = float(bullet.get("speed", 10))
+                created_at = float(bullet.get("created_at", 0))
+                
+                # Verifica se a bala expirou (mais de 30 segundos)
+                if current_time - created_at > 30:
+                    bullets_to_remove.append(bullet)
+                    continue
+                
+                # Calcula nova posição (velocidade fixa de 5 pixels por frame)
+                new_x = x + dx * 5
+                new_y = y + dy * 5
+                
+                # Verifica colisão com caixas localmente
+                if self.check_bullet_box_collision(new_x, new_y):
+                    print(f"📦 Colisão local detectada! Bala {bullet['id']} atingiu caixa")
+                    # Adiciona efeito visual de colisão
+                    self.collision_effects.append({
+                        "x": new_x,
+                        "y": new_y,
+                        "start_time": current_time,
+                        "duration": 0.5  # 0.5 segundos
+                    })
+                    bullets_to_remove.append(bullet)
+                    continue
+                
+                # Verifica se saiu da tela
+                if (new_x < -BULLET_SIZE or new_x > SCREEN_WIDTH + BULLET_SIZE or 
+                    new_y < -BULLET_SIZE or new_y > SCREEN_HEIGHT + BULLET_SIZE):
+                    bullets_to_remove.append(bullet)
+                    continue
+                
+                # Atualiza posição da bala
+                bullet["x"] = new_x
+                bullet["y"] = new_y
+                
+                # Envia atualização para o servidor
+                self.send_bullet_update(bullet["id"], new_x, new_y)
+                
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao atualizar bala {bullet.get('id')}: {e}")
                 bullets_to_remove.append(bullet)
-                continue
-
-            # Se é uma bala do jogador local, envia atualização para o servidor
-            if bullet.get("shooter_id") == self.player_id:
-                bullet_id = bullet["id"]
-                
-                # Debug: mostra informações da bala
-                print(f"   Bala {bullet_id} em ({bullet['x']:.1f}, {bullet['y']:.1f}) - shooter: {bullet.get('shooter_id')}")
-                
-                # Debug: mostra as condições
-                time_condition = current_time - self.last_bullet_update_time >= self.bullet_update_interval
-                print(f"   ⏱️ Condição: tempo={time_condition}")
-                
-                # Envia atualização se passou tempo suficiente
-                if time_condition:
-                    try:
-                        message = {
-                            "action": "bullet_update",
-                            "bullet_id": bullet_id,
-                            "x": bullet["x"],
-                            "y": bullet["y"],
-                            "shooter_id": self.player_id
-                        }
-                        print(f"   📤 Enviando atualização para bala {bullet_id}")
-                        self.ws.send(json.dumps(message))
-                        self.last_bullet_update_time = current_time
-                    except Exception as e:
-                        print(f"❌ Erro ao enviar atualização de bala: {e}")
-                else:
-                    print(f"   ⏸️ Bala {bullet_id} muito recente para enviar")
-            else:
-                print(f"   👤 Bala {bullet.get('id')} não é do jogador local (shooter: {bullet.get('shooter_id')})")
-
-        # Remove balas processadas
+        
+        # Remove balas que colidiram ou expiraram
         for bullet in bullets_to_remove:
-            if bullet in self.bullets:
+            try:
                 self.bullets.remove(bullet)
+                print(f"🗑️ Bala {bullet['id']} removida localmente")
+            except ValueError:
+                pass  # Bala já foi removida
+        
+        self.last_bullet_update_time = current_time
+        
+        # Remove efeitos de colisão expirados
+        self.collision_effects = [effect for effect in self.collision_effects 
+                                 if current_time - effect["start_time"] < effect["duration"]]
 
     def send_bullet_update(self, bullet_id, x, y):
         """Envia atualização de posição de bala para o servidor"""
         if not self.connected or not self.ws:
             return
 
-        try:
-            message = {
-                "action": "bullet_update",
-                "bullet_id": bullet_id,
-                "x": x,
-                "y": y,
-                "shooter_id": self.player_id
-            }
-            self.ws.send(json.dumps(message))
-        except Exception as e:
-            print(f"❌ Erro ao enviar atualização de bala: {e}")
+        # Só envia atualizações para balas do jogador local
+        for bullet in self.bullets:
+            if bullet["id"] == bullet_id and bullet.get("shooter_id") == self.player_id:
+                try:
+                    message = {
+                        "action": "bullet_update",
+                        "bullet_id": bullet_id,
+                        "x": x,
+                        "y": y,
+                        "shooter_id": self.player_id
+                    }
+                    self.ws.send(json.dumps(message))
+                except Exception as e:
+                    print(f"❌ Erro ao enviar atualização de bala: {e}")
+                break
 
     def check_box_collision(self, new_x, new_y):
         """Verifica se a nova posição colide com alguma caixa"""
@@ -827,6 +846,28 @@ class MultiplayerGame:
             except (ValueError, TypeError) as e:
                 print(f"❌ Erro ao desenhar bala {bullet.get('id')}: {e}")
 
+        # Desenha efeitos de colisão
+        current_time = time.time()
+        for effect in self.collision_effects:
+            try:
+                elapsed = current_time - effect["start_time"]
+                progress = elapsed / effect["duration"]
+                
+                # Efeito de explosão que diminui com o tempo
+                size = int(20 * (1 - progress))
+                alpha = int(255 * (1 - progress))
+                
+                if size > 0:
+                    # Desenha círculo de explosão
+                    color = (255, 100, 0)  # Laranja
+                    pygame.draw.circle(self.screen, color, 
+                                     (int(effect["x"]), int(effect["y"])), size)
+                    # Borda da explosão
+                    pygame.draw.circle(self.screen, (255, 255, 0), 
+                                     (int(effect["x"]), int(effect["y"])), size, 2)
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao desenhar efeito de colisão: {e}")
+
         # Desenha outros jogadores
         for player_id, player_data in self.other_players.items():
             color = player_data["color"]
@@ -943,6 +984,7 @@ class MultiplayerGame:
             "",
             "📦 Caixas marrons:",
             "Obstáculos intransponíveis",
+            "Bloqueiam tiros!",
             "Use como cobertura!"
         ]
         
