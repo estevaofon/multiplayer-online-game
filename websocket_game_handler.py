@@ -1860,3 +1860,5 @@ def get_all_bullets_dynamo():
     except Exception as e:
         print(f"❌ Erro ao buscar balas do DynamoDB: {e}")
         return []
+
+# rollback file
