@@ -149,8 +149,14 @@ class MultiplayerGame:
                 self.flags = data.get("flags", self.flags)
                 self.bullets = data.get("bullets", [])
                 self.scores = data.get("scores", self.scores)
-                self.collision_boxes = data.get("collision_boxes", [])
-                print(f"📦 Caixas de colisão recebidas: {len(self.collision_boxes)}")
+                
+                # Processa caixas de colisão
+                received_boxes = data.get("collision_boxes", [])
+                print(f"📦 Caixas de colisão recebidas: {len(received_boxes)}")
+                for i, box in enumerate(received_boxes):
+                    print(f"   Caixa {i}: {box}")
+                
+                self.collision_boxes = received_boxes
 
             if msg_type == "player_joined":
                 if "player_data" in data:

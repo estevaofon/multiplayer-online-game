@@ -134,6 +134,9 @@ def generate_collision_boxes():
     """Gera caixas de colisão aleatórias no mapa"""
     import random
     
+    # Usa uma seed fixa para garantir que as caixas sejam sempre as mesmas
+    random.seed(42)  # Seed fixa para consistência
+    
     boxes = []
     attempts = 0
     max_attempts = 1000
@@ -228,8 +231,14 @@ def load_game_state():
             
             # Carrega caixas de colisão ou gera novas se não existirem
             collision_boxes = item.get("collision_boxes", [])
+            print(f"📦 Caixas carregadas do DynamoDB: {len(collision_boxes)}")
             if not collision_boxes:
+                print("📦 Nenhuma caixa encontrada no DynamoDB, gerando novas...")
                 collision_boxes = generate_collision_boxes()
+            else:
+                print("📦 Usando caixas existentes do DynamoDB")
+                for i, box in enumerate(collision_boxes):
+                    print(f"   Caixa {i}: {box}")
             
             result = {
                 "flags": item.get("flags", {
@@ -250,7 +259,9 @@ def load_game_state():
             print(f"🔍 Scores padrão definidos: {default_scores}")
             
             # Gera caixas de colisão para novo jogo
+            print("📦 Gerando caixas de colisão para novo jogo...")
             collision_boxes = generate_collision_boxes()
+            print(f"📦 {len(collision_boxes)} caixas geradas para novo jogo")
             
             result = {
                 "flags": {
@@ -1581,6 +1592,12 @@ def send_game_state(api_gateway_client, connection_id):
         print(f"🔍 Tipo dos scores: {type(current_scores)}")
         print(f"🔍 Conteúdo dos scores: {current_scores}")
         
+        # Log detalhado das caixas de colisão
+        collision_boxes = game_state.get("collision_boxes", [])
+        print(f"📦 Caixas de colisão no game_state: {len(collision_boxes)}")
+        for i, box in enumerate(collision_boxes):
+            print(f"   Caixa {i}: {box}")
+        
         game_state_message = {
             "type": "game_state",
             "players": active_players,
@@ -1588,9 +1605,11 @@ def send_game_state(api_gateway_client, connection_id):
             "bullets": bullets,
             "scores": current_scores,
             "teams": TEAMS,
-            "collision_boxes": game_state.get("collision_boxes", []),
+            "collision_boxes": collision_boxes,
             "timestamp": int(time.time())
         }
+        
+        print(f"📦 Caixas de colisão na mensagem: {len(game_state_message['collision_boxes'])}")
         
         print(f"🔍 Scores na mensagem final: {game_state_message['scores']}")
         print(f"🔍 Tipo dos scores na mensagem: {type(game_state_message['scores'])}")
@@ -1839,12 +1858,44 @@ def debug_handler(event, context):
     Função de debug para testar o sistema
     """
     try:
+        print("🔍 DEBUG HANDLER")
+        print(f"Evento: {json.dumps(event, default=str)}")
+        
+        # Testa geração de caixas
+        print("📦 Testando geração de caixas...")
+        boxes1 = generate_collision_boxes()
+        print(f"📦 Primeira geração: {len(boxes1)} caixas")
+        
+        # Reseta a seed e gera novamente
+        import random
+        random.seed(42)
+        boxes2 = generate_collision_boxes()
+        print(f"📦 Segunda geração: {len(boxes2)} caixas")
+        
+        # Compara as duas gerações
+        if boxes1 == boxes2:
+            print("✅ Caixas geradas consistentemente!")
+        else:
+            print("❌ Caixas geradas diferentemente!")
+            print(f"   Primeira: {boxes1}")
+            print(f"   Segunda: {boxes2}")
+        
+        # Testa carregamento do estado
+        print("🔄 Testando carregamento do estado...")
+        loaded_state = load_game_state()
+        print(f"📦 Caixas no estado carregado: {len(loaded_state.get('collision_boxes', []))}")
+        
         stats = get_connection_stats()
         print(f"📊 Estatísticas: {json.dumps(stats, default=str)}")
         
         return {
             "statusCode": 200,
-            "body": json.dumps(stats, default=str)
+            "body": json.dumps({
+                "boxes_consistent": boxes1 == boxes2,
+                "boxes_count": len(boxes1),
+                "loaded_boxes_count": len(loaded_state.get('collision_boxes', [])),
+                "stats": stats
+            }, default=str)
         }
 
     except Exception as e:
