@@ -189,6 +189,9 @@ def generate_collision_boxes():
             print(f"📦 Caixa de colisão gerada em ({x}, {y})")
     
     print(f"✅ Geradas {len(boxes)} caixas de colisão")
+    # Log das posições das caixas geradas
+    for i, box in enumerate(boxes):
+        print(f"   Caixa {i}: {box['id']} em ({box['x']}, {box['y']})")
     return boxes
 
 
@@ -225,10 +228,38 @@ def load_game_state():
             
             print(f"🔍 Scores convertidos: {converted_scores}")
             
-            # Carrega caixas de colisão ou gera novas se não existirem
+            # Carrega caixas de colisão do DynamoDB
             collision_boxes = item.get("collision_boxes", [])
             if not collision_boxes:
+                print("📦 Nenhuma caixa de colisão encontrada no DynamoDB, gerando novas...")
                 collision_boxes = generate_collision_boxes()
+                # Salva as caixas geradas no DynamoDB para uso futuro
+                item_to_save = {
+                    "id": "current_game",
+                    "flags": item.get("flags", {
+                        "red": {"x": TEAMS["red"]["flag_x"], "y": TEAMS["red"]["flag_y"], "captured": False, "carrier": None},
+                        "blue": {"x": TEAMS["blue"]["flag_x"], "y": TEAMS["blue"]["flag_y"], "captured": False, "carrier": None}
+                    }),
+                    "bullets": item.get("bullets", []),
+                    "scores": converted_scores,
+                    "game_started": item.get("game_started", False),
+                    "collision_boxes": collision_boxes,
+                    "last_updated": int(time.time()),
+                    "expires_at": int(time.time()) + 86400
+                }
+                game_state_table.put_item(Item=item_to_save)
+                print("💾 Caixas de colisão salvas no DynamoDB")
+            else:
+                print(f"📦 Carregadas {len(collision_boxes)} caixas de colisão do DynamoDB")
+                # Log das posições das caixas carregadas
+                for i, box in enumerate(collision_boxes):
+                    print(f"   Caixa {i}: {box.get('id', 'sem_id')} em ({box.get('x', 0)}, {box.get('y', 0)})")
+                # Verifica se as caixas têm as propriedades necessárias
+                for i, box in enumerate(collision_boxes):
+                    if not all(key in box for key in ["id", "x", "y", "size"]):
+                        print(f"⚠️ Caixa {i} incompleta, regenerando todas as caixas...")
+                        collision_boxes = generate_collision_boxes()
+                        break
             
             result = {
                 "flags": item.get("flags", {
@@ -364,7 +395,7 @@ game_state = {
     "bullets": [],
     "scores": {"red": 0, "blue": 0},
     "game_started": False,
-    "collision_boxes": []
+    "collision_boxes": []  # Será carregado do DynamoDB
 }
 
 
